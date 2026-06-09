@@ -5,6 +5,7 @@
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
+import bcrypt
 
 from database import SessionLocal, engine, Base
 from models import StudentDB, ProgressDB
@@ -20,26 +21,29 @@ app = FastAPI()
 # MODELOS DE ENTRADA (PYDANTIC)
 # ==========================================
 
-# Dados necessários para cadastrar um aluno
+# Cadastro de aluno
 class Student(BaseModel):
     name: str
     email: str
     password: str
 
 
-# Dados enviados pelo aluno ao responder um quiz
+# Login
+class Login(BaseModel):
+    email: str
+    password: str
+
+
+# Resposta do quiz
 class QuizAnswer(BaseModel):
     answer: str
 
 
-# Dados necessários para salvar uma pontuação
+# Salvar progresso
 class Progress(BaseModel):
     student_id: int
     score: int
-    
-class Login(BaseModel):
-    email: str
-    password: str
+
 
 # ==========================================
 # CADASTRO DE ALUNOS
@@ -47,37 +51,84 @@ class Login(BaseModel):
 
 @app.post("/register")
 def register(student: Student):
-    """
-    Cadastra um novo aluno no banco de dados.
-    """
 
     db: Session = SessionLocal()
 
     try:
+
+        # Criptografa a senha
+        hashed_password = bcrypt.hashpw(
+            student.password.encode("utf-8"),
+            bcrypt.gensalt()
+        ).decode("utf-8")
+
+        # Cria novo aluno
         new_student = StudentDB(
             name=student.name,
             email=student.email,
-            password=student.password
-)
+            password=hashed_password
+        )
 
         db.add(new_student)
         db.commit()
         db.refresh(new_student)
 
         return {
-            "message": "Aluno salvo com sucesso",
+            "message": "Aluno cadastrado com sucesso",
             "id": new_student.id,
             "name": new_student.name,
             "email": new_student.email
         }
 
     except Exception as e:
+
         db.rollback()
 
         raise HTTPException(
             status_code=500,
-            detail=f"Erro ao salvar aluno: {str(e)}"
+            detail=f"Erro ao cadastrar aluno: {str(e)}"
         )
+
+    finally:
+        db.close()
+
+
+# ==========================================
+# LOGIN
+# ==========================================
+
+@app.post("/login")
+def login(data: Login):
+
+    db: Session = SessionLocal()
+
+    try:
+
+        student = db.query(StudentDB).filter(
+            StudentDB.email == data.email
+        ).first()
+
+        if not student:
+            raise HTTPException(
+                status_code=404,
+                detail="Aluno não encontrado"
+            )
+
+        # Verifica senha criptografada
+        if not bcrypt.checkpw(
+            data.password.encode("utf-8"),
+            student.password.encode("utf-8")
+        ):
+            raise HTTPException(
+                status_code=401,
+                detail="Senha incorreta"
+            )
+
+        return {
+            "message": "Login realizado com sucesso",
+            "student_id": student.id,
+            "name": student.name
+        }
 
     finally:
         db.close()
@@ -89,9 +140,6 @@ def register(student: Student):
 
 @app.get("/students")
 def get_students():
-    """
-    Retorna todos os alunos cadastrados.
-    """
 
     db: Session = SessionLocal()
 
@@ -108,13 +156,11 @@ def get_students():
 
 @app.get("/students/{student_id}")
 def get_student(student_id: int):
-    """
-    Busca um aluno específico pelo ID.
-    """
 
     db: Session = SessionLocal()
 
     try:
+
         student = db.query(StudentDB).filter(
             StudentDB.id == student_id
         ).first()
@@ -132,14 +178,11 @@ def get_student(student_id: int):
 
 
 # ==========================================
-# QUIZ DE INGLÊS
+# QUIZ
 # ==========================================
 
 @app.post("/quiz")
 def quiz(data: QuizAnswer):
-    """
-    Corrige uma resposta de quiz.
-    """
 
     correct_answer = "I am fine."
 
@@ -157,14 +200,11 @@ def quiz(data: QuizAnswer):
 
 
 # ==========================================
-# SALVAR PROGRESSO DO ALUNO
+# SALVAR PROGRESSO
 # ==========================================
 
 @app.post("/progress")
 def save_progress(progress: Progress):
-    """
-    Salva uma pontuação no histórico do aluno.
-    """
 
     db: Session = SessionLocal()
 
@@ -189,14 +229,11 @@ def save_progress(progress: Progress):
 
 
 # ==========================================
-# LISTAR TODO O PROGRESSO
+# LISTAR PROGRESSO
 # ==========================================
 
 @app.get("/progress")
 def get_progress():
-    """
-    Retorna todas as pontuações registradas.
-    """
 
     db: Session = SessionLocal()
 
@@ -208,14 +245,11 @@ def get_progress():
 
 
 # ==========================================
-# RANKING DE PONTUAÇÕES
+# RANKING
 # ==========================================
 
 @app.get("/ranking")
 def ranking():
-    """
-    Retorna as maiores pontuações primeiro.
-    """
 
     db: Session = SessionLocal()
 
@@ -232,33 +266,3 @@ def ranking():
     finally:
         db.close()
         
-@app.post("/login")
-def login(data: Login):
-
-    db: Session = SessionLocal()
-
-    try:
-
-        student = db.query(StudentDB).filter(
-            StudentDB.email == data.email
-        ).first()
-
-        if not student:
-            raise HTTPException(
-                status_code=404,
-                detail="Aluno não encontrado"
-            )
-            if student.password != data.password:
-                raise HTTPException(
-                    status_code=401,
-                    detail="Senha incorreta"
-                )
-
-        return {
-            "message": "Login realizado com sucesso",
-            "student_id": student.id,
-            "name": student.name
-        }
-
-    finally:
-        db.close()
