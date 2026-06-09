@@ -1,8 +1,4 @@
-# ==========================================
-# IMPORTAÇÕES
-# ==========================================
-
-import token
+import token # IMPORTAÇÕES
 
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
@@ -18,11 +14,11 @@ from jose import JWTError
 from database import SessionLocal, engine, Base
 from models import StudentDB, ProgressDB
 
-# Cria as tabelas do banco caso não existam
-Base.metadata.create_all(bind=engine)
 
-# Inicializa a aplicação FastAPI
-app = FastAPI()
+Base.metadata.create_all(bind=engine) # CRIA TABELAS NO BANCO DE DADOS
+
+
+app = FastAPI() # Inicializa a aplicação FastAPI
 SECRET_KEY = "whatsup-english-secret-key"
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60
@@ -31,20 +27,16 @@ oauth2_scheme = OAuth2PasswordBearer(
     tokenUrl="login"
 )
 
-
-# ==========================================
 # MODELOS DE ENTRADA (PYDANTIC)
-# ==========================================
 
-# Cadastro de aluno
-class Student(BaseModel):
+
+class Student(BaseModel): # Cadastro de aluno
     name: str
     email: str
     password: str
 
 
-# Login
-class Login(BaseModel):
+class Login(BaseModel): # Login
     email: str
     password: str
 
@@ -83,22 +75,18 @@ def get_current_user(token: str = Depends(oauth2_scheme)):
             status_code=401,
             detail="Token inválido"
         )
-# Resposta do quiz
-class QuizAnswer(BaseModel):
+
+class QuizAnswer(BaseModel): # Resposta do quiz
     answer: str
 
 
-# Salvar progresso
-class Progress(BaseModel):
+
+class Progress(BaseModel): # Salvar progresso
     student_id: int
     score: int
 
 
-# ==========================================
-# CADASTRO DE ALUNOS
-# ==========================================
-
-@app.post("/register")
+@app.post("/register") # CADASTRO DE ALUNOS
 def register(student: Student):
 
     db: Session = SessionLocal()
@@ -142,11 +130,8 @@ def register(student: Student):
         db.close()
 
 
-# ==========================================
-# LOGIN
-# ==========================================
 
-@app.post("/login")
+@app.post("/login") # LOGIN
 def login(data: Login):
 
     db: Session = SessionLocal()
@@ -189,11 +174,8 @@ def login(data: Login):
         db.close()
 
 
-# ==========================================
-# LISTAR TODOS OS ALUNOS
-# ==========================================
 
-@app.get("/students")
+@app.get("/students") # LISTAR TODOS OS ALUNOS
 def get_students():
 
     db: Session = SessionLocal()
@@ -205,11 +187,7 @@ def get_students():
         db.close()
 
 
-# ==========================================
-# BUSCAR ALUNO POR ID
-# ==========================================
-
-@app.get("/students/{student_id}")
+@app.get("/students/{student_id}") # BUSCAR ALUNO POR ID
 def get_student(student_id: int):
 
     db: Session = SessionLocal()
@@ -232,11 +210,8 @@ def get_student(student_id: int):
         db.close()
 
 
-# ==========================================
-# QUIZ
-# ==========================================
 
-@app.post("/quiz")
+@app.post("/quiz") # QUIZ
 def quiz(data: QuizAnswer):
 
     correct_answer = "I am fine."
@@ -254,11 +229,8 @@ def quiz(data: QuizAnswer):
     }
 
 
-# ==========================================
-# SALVAR PROGRESSO
-# ==========================================
 
-@app.post("/progress")
+@app.post("/progress") # SALVAR PROGRESSO
 def save_progress(progress: Progress):
 
     db: Session = SessionLocal()
@@ -283,11 +255,7 @@ def save_progress(progress: Progress):
         db.close()
 
 
-# ==========================================
-# LISTAR PROGRESSO
-# ==========================================
-
-@app.get("/progress")
+@app.get("/progress") # LISTAR PROGRESSO
 def get_progress():
 
     db: Session = SessionLocal()
@@ -299,11 +267,7 @@ def get_progress():
         db.close()
 
 
-# ==========================================
-# RANKING
-# ==========================================
-
-@app.get("/ranking")
+@app.get("/ranking") # RANKING
 def ranking():
 
     db: Session = SessionLocal()
