@@ -24,6 +24,7 @@ app = FastAPI()
 class Student(BaseModel):
     name: str
     email: str
+    password: str
 
 
 # Dados enviados pelo aluno ao responder um quiz
@@ -35,7 +36,10 @@ class QuizAnswer(BaseModel):
 class Progress(BaseModel):
     student_id: int
     score: int
-
+    
+class Login(BaseModel):
+    email: str
+    password: str
 
 # ==========================================
 # CADASTRO DE ALUNOS
@@ -52,8 +56,9 @@ def register(student: Student):
     try:
         new_student = StudentDB(
             name=student.name,
-            email=student.email
-        )
+            email=student.email,
+            password=student.password
+)
 
         db.add(new_student)
         db.commit()
@@ -227,3 +232,33 @@ def ranking():
     finally:
         db.close()
         
+@app.post("/login")
+def login(data: Login):
+
+    db: Session = SessionLocal()
+
+    try:
+
+        student = db.query(StudentDB).filter(
+            StudentDB.email == data.email
+        ).first()
+
+        if not student:
+            raise HTTPException(
+                status_code=404,
+                detail="Aluno não encontrado"
+            )
+            if student.password != data.password:
+                raise HTTPException(
+                    status_code=401,
+                    detail="Senha incorreta"
+                )
+
+        return {
+            "message": "Login realizado com sucesso",
+            "student_id": student.id,
+            "name": student.name
+        }
+
+    finally:
+        db.close()
