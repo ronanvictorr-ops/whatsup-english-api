@@ -8,11 +8,22 @@ from jose import jwt
 from datetime import datetime, timedelta    
 from fastapi import Depends
 from fastapi.security import OAuth2PasswordBearer
-from jose import JWTError   
-
-
+from jose import JWTError  
 from database import SessionLocal, engine, Base
-from models import StudentDB, ProgressDB
+from models import StudentDB, ProgressDB, ConversationDB
+from openai import OpenAI
+from dotenv import load_dotenv
+import os
+
+load_dotenv()
+
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+
+print("API KEY:", OPENAI_API_KEY)
+
+client = OpenAI(
+    api_key=OPENAI_API_KEY
+)
 
 
 Base.metadata.create_all(bind=engine) # CRIA TABELAS NO BANCO DE DADOS
@@ -292,4 +303,174 @@ def me(user = Depends(get_current_user)):
         "message": "Usuário autenticado",
         "user": user
     }
-        
+    
+    
+@app.get("/students/{student_id}/progress")
+def get_student_progress(student_id: int):
+
+    db: Session = SessionLocal()
+
+    try:
+
+        student = db.query(StudentDB).filter(
+            StudentDB.id == student_id
+        ).first()
+
+        if not student:
+            raise HTTPException(
+                status_code=404,
+                detail="Aluno não encontrado"
+            )
+
+        return {
+            "student": student.name,
+            "scores": [
+                progress.score
+                for progress in student.progresses
+            ]
+        }
+
+    finally:
+        db.close()
+
+class Conversation(BaseModel):
+    student_id: int
+    question: str
+    answer: str  
+
+
+
+@app.post("/conversation") #SALVAR CONVERSAS
+def save_conversation(conversation: Conversation):
+
+    db: Session = SessionLocal()
+
+    try:
+
+        new_conversation = ConversationDB(
+            student_id=conversation.student_id,
+            question=conversation.question,
+            answer=conversation.answer
+        )
+
+        db.add(new_conversation)
+        db.commit()
+        db.refresh(new_conversation)
+
+        return {
+            "message": "Conversa salva com sucesso",
+            "id": new_conversation.id
+        }
+
+    finally:
+        db.close()
+
+
+
+@app.get("/conversations") # LISTAR CONVERSAS
+def get_conversations():
+
+    db: Session = SessionLocal()
+
+    try:
+        return db.query(ConversationDB).all()
+
+    finally:
+        db.close()
+
+
+
+@app.get("/students/{student_id}/conversations") #CONVERSAS DE ALUNOS
+def get_student_conversations(student_id: int):
+
+    db: Session = SessionLocal()
+
+    try:
+
+        student = db.query(StudentDB).filter(
+            StudentDB.id == student_id
+        ).first()
+
+        if not student:
+            raise HTTPException(
+                status_code=404,
+                detail="Aluno não encontrado"
+            )
+
+        return {
+            "student": student.name,
+            "conversations": [
+                {
+                    "question": c.question,
+                    "answer": c.answer
+                }
+                for c in student.conversations
+            ]
+        }
+
+    finally:
+        db.close()
+
+class ChatRequest(BaseModel):
+    student_id: int
+    question: str
+
+
+# Resposta da IA
+
+@app.post("/chat")
+def chat(data: ChatRequest):
+
+    db: Session = SessionLocal()
+
+    try:
+
+        student = db.query(StudentDB).filter(
+            StudentDB.id == data.student_id
+        ).first()
+
+        if not student:
+            raise HTTPException(
+                status_code=404,
+                detail="Aluno não encontrado"
+            )
+
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {
+                    "role": "system",
+                    "content": """
+                    You are an English teacher.
+                    Correct grammar mistakes.
+                    Encourage conversation.
+                    Answer in English.
+                    """
+                },
+                {
+                    "role": "user",
+                    "content": data.question
+                }
+            ]
+        )
+
+        answer = response.choices[0].message.content
+
+        conversation = ConversationDB(
+            student_id=data.student_id,
+            question=data.question,
+            answer=answer
+        )
+
+        db.add(conversation)
+        db.commit()
+        db.refresh(conversation)
+
+        return {
+            "student": student.name,
+            "question": data.question,
+            "answer": answer
+        }
+
+    finally:
+        db.close()
