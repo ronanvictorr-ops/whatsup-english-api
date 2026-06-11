@@ -20,9 +20,43 @@ class StudentDB(Base):
     __tablename__ = "students"
 
     id = Column(Integer, primary_key=True, index=True)
+
     name = Column(String)
-    email = Column(String, unique=True)
+
+    email = Column(
+        String,
+        unique=True,
+        index=True
+    )
+
     password = Column(String)
+
+    phone = Column(
+        String,
+        unique=True,
+        index=True,
+        nullable=False
+    )
+
+    level = Column(
+        String,
+        default="Not Assessed"
+    )
+
+    preferred_language = Column(
+        String,
+        default="Portuguese"
+    )
+
+    assessment_completed = Column(
+        String,
+        default="No"
+    )
+
+    learning_goal = Column(
+        String,
+        default="Conversation"
+    )
 
     # Um aluno possui vários progressos
     progresses = relationship(
@@ -52,6 +86,11 @@ class ProgressDB(Base):
     )
 
     score = Column(Integer)
+
+    created_at = Column(
+        DateTime,
+        default=datetime.utcnow
+    )
 
     # Cada progresso pertence a um aluno
     student = relationship(
@@ -87,4 +126,3 @@ class ConversationDB(Base):
         "StudentDB",
         back_populates="conversations"
     )
-    
