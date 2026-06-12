@@ -1,13 +1,14 @@
+from datetime import datetime
+
 from sqlalchemy import (
     Column,
-    Integer,
-    String,
+    DateTime,
     ForeignKey,
-    DateTime
+    Integer,
+    String
 )
 
 from sqlalchemy.orm import relationship
-from datetime import datetime
 
 from database import Base
 
@@ -19,7 +20,11 @@ from database import Base
 class StudentDB(Base):
     __tablename__ = "students"
 
-    id = Column(Integer, primary_key=True, index=True)
+    id = Column(
+        Integer,
+        primary_key=True,
+        index=True
+    )
 
     name = Column(String)
 
@@ -58,13 +63,31 @@ class StudentDB(Base):
         default="Conversation"
     )
 
-    # Um aluno possui vários progressos
+    current_stage = Column(
+        Integer,
+        default=0
+    )
+
+    last_activity = Column(
+        DateTime,
+        nullable=True
+    )
+
+    xp = Column(
+        Integer,
+        default=0
+    )
+
+    streak_days = Column(
+        Integer,
+        default=0
+    )
+
     progresses = relationship(
         "ProgressDB",
         back_populates="student"
     )
 
-    # Um aluno possui várias conversas
     conversations = relationship(
         "ConversationDB",
         back_populates="student"
@@ -78,7 +101,11 @@ class StudentDB(Base):
 class ProgressDB(Base):
     __tablename__ = "progress"
 
-    id = Column(Integer, primary_key=True, index=True)
+    id = Column(
+        Integer,
+        primary_key=True,
+        index=True
+    )
 
     student_id = Column(
         Integer,
@@ -92,7 +119,6 @@ class ProgressDB(Base):
         default=datetime.utcnow
     )
 
-    # Cada progresso pertence a um aluno
     student = relationship(
         "StudentDB",
         back_populates="progresses"
@@ -106,7 +132,11 @@ class ProgressDB(Base):
 class ConversationDB(Base):
     __tablename__ = "conversations"
 
-    id = Column(Integer, primary_key=True, index=True)
+    id = Column(
+        Integer,
+        primary_key=True,
+        index=True
+    )
 
     student_id = Column(
         Integer,
@@ -114,6 +144,7 @@ class ConversationDB(Base):
     )
 
     question = Column(String)
+
     answer = Column(String)
 
     created_at = Column(
@@ -121,8 +152,8 @@ class ConversationDB(Base):
         default=datetime.utcnow
     )
 
-    # Cada conversa pertence a um aluno
     student = relationship(
         "StudentDB",
         back_populates="conversations"
     )
+    
