@@ -5,7 +5,8 @@ from sqlalchemy import (
     DateTime,
     ForeignKey,
     Integer,
-    String
+    String,
+    Text
 )
 
 from sqlalchemy.orm import relationship
@@ -83,6 +84,25 @@ class StudentDB(Base):
         default=0
     )
 
+    lesson_schedule = Column(
+        Text,
+        nullable=True
+    )
+
+    schedule_completed = Column(
+        String,
+        default="No"
+    )
+
+    last_daily_word_date = Column(String)
+
+    last_weekly_quiz_week = Column(String)
+
+    last_lesson_keys = Column(
+        Text,
+        default="[]"
+    )
+
     progresses = relationship(
         "ProgressDB",
         back_populates="student"
@@ -90,6 +110,11 @@ class StudentDB(Base):
 
     conversations = relationship(
         "ConversationDB",
+        back_populates="student"
+    )
+
+    learning_records = relationship(
+        "LearningRecordDB",
         back_populates="student"
     )
 
@@ -157,3 +182,51 @@ class ConversationDB(Base):
         back_populates="conversations"
     )
     
+
+# ==========================================
+# MEMORIA PEDAGOGICA
+# ==========================================
+
+class LearningRecordDB(Base):
+    __tablename__ = "learning_records"
+
+    id = Column(
+        Integer,
+        primary_key=True,
+        index=True
+    )
+
+    student_id = Column(
+        Integer,
+        ForeignKey("students.id")
+    )
+
+    skill = Column(String)
+
+    topic = Column(String)
+
+    original_text = Column(Text)
+
+    corrected_text = Column(Text)
+
+    explanation = Column(Text)
+
+    source = Column(
+        String,
+        default="chat"
+    )
+
+    xp_awarded = Column(
+        Integer,
+        default=0
+    )
+
+    created_at = Column(
+        DateTime,
+        default=datetime.utcnow
+    )
+
+    student = relationship(
+        "StudentDB",
+        back_populates="learning_records"
+    )
