@@ -622,6 +622,94 @@ def local_now():
     return datetime.now(LOCAL_TIMEZONE)
 
 
+def get_seasonal_context(now: datetime | None = None):
+    now = now or local_now()
+    month_day = now.strftime("%m-%d")
+
+    seasonal_dates = {
+        "01-01": {
+            "name": "New Year's Day",
+            "theme": "goals, plans, resolutions, and fresh starts",
+            "vocabulary": "goals, resolution, improve, habit, fresh start",
+        },
+        "02-14": {
+            "name": "Valentine's Day",
+            "theme": "relationships, affection, invitations, and kind messages",
+            "vocabulary": "date, gift, flowers, couple, romantic",
+        },
+        "03-08": {
+            "name": "International Women's Day",
+            "theme": "respect, achievements, work, family, and appreciation",
+            "vocabulary": "respect, achievement, equality, support, inspire",
+        },
+        "04-01": {
+            "name": "April Fools' Day",
+            "theme": "jokes, humor, surprises, and playful conversation",
+            "vocabulary": "joke, prank, funny, surprise, kidding",
+        },
+        "05-01": {
+            "name": "Labor Day",
+            "theme": "jobs, routines, careers, meetings, and professional English",
+            "vocabulary": "work, career, meeting, schedule, coworker",
+        },
+        "06-12": {
+            "name": "Dia dos Namorados no Brasil",
+            "theme": "dating, relationships, compliments, invitations, gifts, and feelings",
+            "vocabulary": "date, crush, relationship, gift, compliment, miss you",
+        },
+        "09-07": {
+            "name": "Brazilian Independence Day",
+            "theme": "Brazil, culture, history, travel, and describing your country",
+            "vocabulary": "independence, country, culture, flag, celebrate",
+        },
+        "10-12": {
+            "name": "Children's Day in Brazil",
+            "theme": "childhood, memories, family, games, and simple past",
+            "vocabulary": "childhood, toy, game, memory, family",
+        },
+        "10-31": {
+            "name": "Halloween",
+            "theme": "costumes, stories, fear, parties, and describing scenes",
+            "vocabulary": "costume, spooky, candy, party, ghost",
+        },
+        "11-20": {
+            "name": "Black Consciousness Day in Brazil",
+            "theme": "culture, identity, history, respect, and representation",
+            "vocabulary": "identity, culture, history, respect, heritage",
+        },
+        "12-24": {
+            "name": "Christmas Eve",
+            "theme": "family, dinner, gifts, plans, and greetings",
+            "vocabulary": "gift, dinner, family, celebrate, holiday",
+        },
+        "12-25": {
+            "name": "Christmas",
+            "theme": "family, gifts, gratitude, travel, and holiday greetings",
+            "vocabulary": "Christmas, gift, grateful, trip, celebrate",
+        },
+        "12-31": {
+            "name": "New Year's Eve",
+            "theme": "plans, reflections, celebrations, future with going to and will",
+            "vocabulary": "celebrate, countdown, midnight, plan, next year",
+        },
+    }
+
+    seasonal = seasonal_dates.get(month_day)
+
+    if not seasonal:
+        return (
+            "No major seasonal date today. Use everyday situations, the student's "
+            "goal, and recent academic memory as the main theme."
+        )
+
+    return (
+        f"Today is {seasonal['name']}. Prefer examples and mini-lessons connected "
+        f"to {seasonal['theme']}. Useful vocabulary: {seasonal['vocabulary']}. "
+        "Keep the theme natural and culturally sensitive; do not force romance or "
+        "personal topics if the student's goal suggests work, travel, or studies."
+    )
+
+
 def current_week_key(now: datetime):
     year, week, _ = now.isocalendar()
     return f"{year}-W{week:02d}"
@@ -924,6 +1012,7 @@ Brand voice:
 def generate_daily_word_challenge(student: StudentDB, db: Session):
     client = get_openai_client()
     learning_summary = get_recent_learning_summary(student.id, db)
+    seasonal_context = get_seasonal_context()
 
     response = client.chat.completions.create(
         model="gpt-4o-mini",
@@ -934,7 +1023,8 @@ def generate_daily_word_challenge(student: StudentDB, db: Session):
 You create a short WhatsApp English word-of-the-day challenge.
 
 Rules:
-- Use the student's level and memory.
+- Use the student's level, memory, and seasonal context.
+- If the seasonal context names a commemorative date or holiday, prefer a word connected to that theme.
 - Keep it under 90 words.
 - Include one useful English word, pronunciation hint, meaning in Portuguese,
   one example sentence, and one tiny challenge for the student to answer.
@@ -943,7 +1033,7 @@ Rules:
             },
             {
                 "role": "user",
-                "content": f"Student: {student.name}\nLevel: {student.level}\nGoal: {student.learning_goal}\nMemory:\n{learning_summary}"
+                "content": f"Student: {student.name}\nLevel: {student.level}\nGoal: {student.learning_goal}\nSeasonal context:\n{seasonal_context}\nMemory:\n{learning_summary}"
             }
         ]
     )
@@ -954,6 +1044,7 @@ Rules:
 def generate_weekly_quiz(student: StudentDB, db: Session):
     client = get_openai_client()
     learning_summary = get_recent_learning_summary(student.id, db)
+    seasonal_context = get_seasonal_context()
 
     response = client.chat.completions.create(
         model="gpt-4o-mini",
@@ -967,13 +1058,14 @@ Rules:
 - Include 3 short writing questions.
 - Include 1 speaking task asking the student to send a short audio.
 - Personalize using recent mistakes.
+- If there is a relevant seasonal date or holiday, use it naturally in the writing or speaking prompts.
 - Keep it under 140 words.
 - Do not include the answers yet.
 """
             },
             {
                 "role": "user",
-                "content": f"Student: {student.name}\nLevel: {student.level}\nGoal: {student.learning_goal}\nMemory:\n{learning_summary}"
+                "content": f"Student: {student.name}\nLevel: {student.level}\nGoal: {student.learning_goal}\nSeasonal context:\n{seasonal_context}\nMemory:\n{learning_summary}"
             }
         ]
     )
@@ -984,6 +1076,7 @@ Rules:
 def generate_weekly_lesson(student: StudentDB, db: Session):
     client = get_openai_client()
     learning_summary = get_recent_learning_summary(student.id, db)
+    seasonal_context = get_seasonal_context()
 
     response = client.chat.completions.create(
         model="gpt-4o-mini",
@@ -994,7 +1087,8 @@ def generate_weekly_lesson(student: StudentDB, db: Session):
 Create one short personalized English mini-lesson for WhatsApp.
 
 Rules:
-- Use the student's level, goal, and recent academic memory.
+- Use the student's level, goal, recent academic memory, and seasonal context.
+- If there is a relevant commemorative date or holiday this week, make it the lesson theme.
 - Teach one new point.
 - Include a simple explanation, 2 examples, and 1 practice question.
 - Keep it under 130 words.
@@ -1003,7 +1097,7 @@ Rules:
             },
             {
                 "role": "user",
-                "content": f"Student: {student.name}\nLevel: {student.level}\nGoal: {student.learning_goal}\nMemory:\n{learning_summary}"
+                "content": f"Student: {student.name}\nLevel: {student.level}\nGoal: {student.learning_goal}\nSeasonal context:\n{seasonal_context}\nMemory:\n{learning_summary}"
             }
         ]
     )
