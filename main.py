@@ -56,7 +56,7 @@ def ensure_runtime_columns():
             "current_lesson": "INTEGER DEFAULT 1",
             "onboarding_notes": "TEXT DEFAULT '[]'",
             "interests": "TEXT DEFAULT ''",
-            "lesson_stage": "TEXT DEFAULT 'intro'",
+            "lesson_stage": "TEXT DEFAULT 'short_explanation'",
             "engagement_minutes": "INTEGER DEFAULT 0",
             "messages_in_current_lesson": "INTEGER DEFAULT 0",
         }
@@ -418,21 +418,27 @@ def format_lesson_title(lesson):
 
 
 LESSON_STAGES = [
-    "intro",
-    "vocabulary",
-    "grammar",
-    "examples",
-    "practice",
-    "correction",
+    "short_explanation",
+    "more_examples",
+    "comprehension",
+    "structure",
+    "exercise_1",
+    "exercise_2",
+    "production",
+    "conversation",
+    "expansion",
     "challenge",
 ]
 
 
 def get_lesson_stage(student: StudentDB):
-    stage = getattr(student, "lesson_stage", None) or "intro"
+    stage = getattr(student, "lesson_stage", None) or "short_explanation"
+
+    if stage in {"intro", "vocabulary", "grammar", "examples", "practice", "correction"}:
+        return "short_explanation"
 
     if stage not in LESSON_STAGES:
-        return "intro"
+        return "short_explanation"
 
     return stage
 
@@ -444,11 +450,11 @@ def advance_lesson_stage(student: StudentDB):
     if current_index < len(LESSON_STAGES) - 1:
         student.lesson_stage = LESSON_STAGES[current_index + 1]
     else:
-        student.lesson_stage = "practice"
+        student.lesson_stage = "conversation"
 
 
 def reset_lesson_flow(student: StudentDB):
-    student.lesson_stage = "intro"
+    student.lesson_stage = "short_explanation"
     student.messages_in_current_lesson = 0
 
 
@@ -460,7 +466,7 @@ def update_lesson_engagement(student: StudentDB):
         getattr(student, "engagement_minutes", 0) or 0
     ) + 2
 
-    if (student.messages_in_current_lesson or 0) % 4 == 0:
+    if (student.messages_in_current_lesson or 0) > 1:
         advance_lesson_stage(student)
 
     if (
@@ -1112,6 +1118,7 @@ def should_send_pronunciation_audio(question: str, answer: str):
 
 def should_send_pronunciation_audio(question: str, answer: str):
     text = (question or "").lower()
+    answer_text = (answer or "").lower()
 
     triggers = (
         "como se diz",
@@ -1134,7 +1141,14 @@ def should_send_pronunciation_audio(question: str, answer: str):
         "difícil entender",
     )
 
-    return any(trigger in text for trigger in triggers)
+    answer_triggers = (
+        "repeat after me:",
+        "repita comigo:",
+    )
+
+    return any(trigger in text for trigger in triggers) or any(
+        trigger in answer_text for trigger in answer_triggers
+    )
 
 
 def build_pronunciation_audio_text(question: str, answer: str):
@@ -1926,7 +1940,7 @@ Wingo's personality:
 Lesson guidance:
 - Do not behave like a free open chat.
 - Lead the student through the current structured lesson.
-- Respect the current lesson stage. If the stage is intro, introduce the topic. If vocabulary, teach useful words. If grammar, explain the structure. If examples, show examples. If practice, ask the student to produce language. If correction, correct and reinforce. If challenge, finish with a small mission.
+- Respect the current lesson stage and follow the micro-lesson flow below.
 - Start from the current lesson topic unless the student asks a direct urgent question.
 - If the student asks something unrelated, answer briefly and gently bring them back to the current lesson.
 - Teach one small point at a time, then ask one practice question.
@@ -1935,7 +1949,32 @@ Lesson guidance:
 - Do not advance the course just because the student sent one answer; reinforce, correct, and practice first.
 - If the student asks "what should I study?" or "start the class", begin the current lesson.
 
+Micro-lesson flow:
+- Each lesson is a micro-lesson: 1 concept, 5 to 10 minutes, 10 to 15 WhatsApp messages.
+- Do not send a long 60-minute class. The product experience is: learn one small thing now, get feedback, continue.
+- Do not send all steps at once. Send only the current step.
+- Do not show labels like "Etapa 1" unless the student asks for a summary.
+- Current stage short_explanation: explain the concept briefly and give 1 bilingual example.
+- Current stage more_examples: give 3 bilingual examples, English first and Portuguese meaning right after.
+- Current stage comprehension: ask what one example means. Example: What does "She is reading" mean?
+- Current stage structure: show the formula clearly. Example: Subject + To Be + Verb + ING.
+- Current stage exercise_1: ask a fill-in-the-blank exercise. Example: I ___ studying.
+- Current stage exercise_2: ask a second fill-in-the-blank exercise. Example: She ___ reading.
+- Current stage production: ask the student to translate or produce one full sentence.
+- Current stage conversation: ask a real conversation question using the topic. Example: What are you doing right now?
+- Current stage expansion: ask for 3 personalized sentences about the student's life, interests, or surroundings.
+- Current stage challenge: finish with a tiny mission and summarize what they learned.
+
+Present Continuous example flow:
+- Short explanation: We use Present Continuous for actions happening now. Example: I am studying English. Eu estou estudando ingles.
+- More examples: She is reading. Ela esta lendo. He is working. Ele esta trabalhando. They are playing soccer. Eles estao jogando futebol.
+- Structure: Subject + To Be + Verb + ING.
+- Explain that -ING is added to the main verb: study -> studying, read -> reading, play -> playing.
+- Explain am/is/are: I am, he/she/it is, you/we/they are.
+- Mention simple spelling only when helpful: make -> making, run -> running.
+
 Standard Wingo lesson model:
+- The Micro-lesson flow above is mandatory and overrides this generic model.
 - Follow this structure for each lesson, but deliver it step by step through conversation.
 - Do not send the whole lesson at once.
 - Never output all labels in one message: Warm-up, Vocabulary, Grammar, Examples, Practice, Correction, Challenge.
@@ -1976,6 +2015,9 @@ Audio control:
 - Ask for at most one short voice note per lesson unless the student explicitly asks for more speaking practice.
 - When asking for audio, request one short voice note under 20 seconds.
 - Use audio mainly for pronunciation, speaking confidence, or final speaking checks.
+- If you want the system to send a teacher audio, write exactly "Repeat after me:" followed by 1 to 3 short English sentences.
+- Use "Repeat after me:" at most once per lesson, preferably after structure, conversation, or challenge.
+- After sending a repeat prompt, ask the student to answer with a short audio only if pronunciation practice is useful.
 - If the student sends many voice notes in sequence, correct briefly and guide them back to text practice.
 - Do not ask for a voice note in the first lesson message.
 - Do not ask for voice notes in challenges unless the student asked for speaking practice.
@@ -2253,7 +2295,7 @@ def send_scheduled_lessons(db: Session, now: datetime):
 
             try:
                 if not getattr(student, "lesson_stage", None):
-                    student.lesson_stage = "intro"
+                    student.lesson_stage = "short_explanation"
                 update_lesson_engagement(student)
                 message = generate_weekly_lesson(student, db)
                 send_whatsapp_message(student.phone, message)
@@ -2333,7 +2375,7 @@ def register(student: Student, db: Session = Depends(get_db)):
     learning_goal=student.learning_goal,
     interests="",
     current_lesson=1,
-    lesson_stage="intro",
+    lesson_stage="short_explanation",
     engagement_minutes=0,
     messages_in_current_lesson=0,
     current_stage=0,
@@ -2709,7 +2751,7 @@ def get_or_create_whatsapp_student(phone: str, db: Session):
         learning_goal="Conversation",
         interests="",
         current_lesson=1,
-        lesson_stage="intro",
+        lesson_stage="short_explanation",
         engagement_minutes=0,
         messages_in_current_lesson=0,
         current_stage=0,
@@ -3060,12 +3102,14 @@ def process_whatsapp_message(phone: str, message: str, db: Session):
     question_for_ai = None
 
     if student.current_stage == 7 and is_lesson_start_request(message):
-        student.lesson_stage = "intro"
+        student.lesson_stage = "short_explanation"
         question_for_ai = (
             "[Internal instruction: the student wants to start the lesson now. "
-            "Begin directly with the current lesson topic. Do not ask 'How are you today?'. "
-            "Do not use a generic warm-up. If the topic is grammar, explain the structure clearly "
-            "with formula, usage, important rules, and examples before asking one practice question.]\n\n"
+            "Begin directly with the short_explanation stage of the current lesson. "
+            "Do not ask 'How are you today?'. Do not use a generic warm-up. "
+            "Teach one small concept, give one bilingual example, and ask one simple question. "
+            "If the topic is Present Continuous, say it is for actions happening now and show one example like "
+            "'I am studying English. Eu estou estudando ingles.']\n\n"
             f"Student message: {message}"
         )
 
