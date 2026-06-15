@@ -64,6 +64,36 @@ class StudentDB(Base):
         default="Conversation"
     )
 
+    interests = Column(
+        Text,
+        default=""
+    )
+
+    onboarding_notes = Column(
+        Text,
+        default="[]"
+    )
+
+    current_lesson = Column(
+        Integer,
+        default=1
+    )
+
+    lesson_stage = Column(
+        String,
+        default="intro"
+    )
+
+    engagement_minutes = Column(
+        Integer,
+        default=0
+    )
+
+    messages_in_current_lesson = Column(
+        Integer,
+        default=0
+    )
+
     current_stage = Column(
         Integer,
         default=0
@@ -229,4 +259,32 @@ class LearningRecordDB(Base):
     student = relationship(
         "StudentDB",
         back_populates="learning_records"
+    )
+
+
+# ==========================================
+# MENSAGENS PROCESSADAS DO WEBHOOK
+# ==========================================
+
+class ProcessedWebhookMessageDB(Base):
+    __tablename__ = "processed_webhook_messages"
+
+    id = Column(
+        Integer,
+        primary_key=True,
+        index=True
+    )
+
+    message_id = Column(
+        String,
+        unique=True,
+        index=True,
+        nullable=False
+    )
+
+    phone = Column(String)
+
+    created_at = Column(
+        DateTime,
+        default=datetime.utcnow
     )

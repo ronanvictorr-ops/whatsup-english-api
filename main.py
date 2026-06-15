@@ -3,7 +3,9 @@ import json
 import os
 import re
 import tempfile
+import unicodedata
 from datetime import datetime, timedelta, timezone
+from difflib import SequenceMatcher
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from pathlib import Path
 import requests
@@ -22,9 +24,16 @@ from jose import JWTError, jwt
 from openai import OpenAI
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
+from sqlalchemy import text
 
 from database import Base, SessionLocal, engine
-from models import ConversationDB, LearningRecordDB, ProgressDB, StudentDB
+from models import (
+    ConversationDB,
+    LearningRecordDB,
+    ProcessedWebhookMessageDB,
+    ProgressDB,
+    StudentDB,
+)
 
 
 
@@ -36,6 +45,31 @@ from models import ConversationDB, LearningRecordDB, ProgressDB, StudentDB
 load_dotenv()
 
 Base.metadata.create_all(bind=engine)
+
+
+def ensure_runtime_columns():
+    with engine.connect() as connection:
+        columns = connection.execute(text("PRAGMA table_info(students)")).fetchall()
+        column_names = {column[1] for column in columns}
+
+        runtime_columns = {
+            "current_lesson": "INTEGER DEFAULT 1",
+            "onboarding_notes": "TEXT DEFAULT '[]'",
+            "interests": "TEXT DEFAULT ''",
+            "lesson_stage": "TEXT DEFAULT 'intro'",
+            "engagement_minutes": "INTEGER DEFAULT 0",
+            "messages_in_current_lesson": "INTEGER DEFAULT 0",
+        }
+
+        for column_name, definition in runtime_columns.items():
+            if column_name not in column_names:
+                connection.execute(
+                    text(f"ALTER TABLE students ADD COLUMN {column_name} {definition}")
+                )
+                connection.commit()
+
+
+ensure_runtime_columns()
 
 app = FastAPI()
 
@@ -65,6 +99,809 @@ WEEKLY_QUIZ_TIME = os.getenv("WEEKLY_QUIZ_TIME", "10:00")
 ACADEMIC_AUTOMATIONS_ENABLED = os.getenv("ACADEMIC_AUTOMATIONS_ENABLED", "true").lower() == "true"
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="login")
+
+
+CURRICULUM = [
+    {"number": 1, "level": "Basic 1 (A1)", "title": "Greetings", "focus": "Hi, Hello, Good morning; What's your name?; My name is..."},
+    {"number": 2, "level": "Basic 1 (A1)", "title": "Countries & Nationalities", "focus": "Where are you from?; I am from Brazil"},
+    {"number": 3, "level": "Basic 1 (A1)", "title": "Numbers (0-100) and Age", "focus": "How old are you?"},
+    {"number": 4, "level": "Basic 1 (A1)", "title": "Verb To Be", "focus": "I am, You are, He is"},
+    {"number": 5, "level": "Basic 1 (A1)", "title": "Family", "focus": "Father, Mother, Brother"},
+    {"number": 6, "level": "Basic 1 (A1)", "title": "Professions", "focus": "What do you do?"},
+    {"number": 7, "level": "Basic 1 (A1)", "title": "Days and Months", "focus": "Basic calendar vocabulary"},
+    {"number": 8, "level": "Basic 1 (A1)", "title": "Time", "focus": "What time is it?"},
+    {"number": 9, "level": "Basic 1 (A1)", "title": "Colors", "focus": "Basic color vocabulary"},
+    {"number": 10, "level": "Basic 1 (A1)", "title": "Basic Review", "focus": "Review greetings, personal info, numbers, family, time, and colors"},
+    {"number": 11, "level": "Basic 2 (A1+)", "title": "Daily Routine", "focus": "Wake up, work, study"},
+    {"number": 12, "level": "Basic 2 (A1+)", "title": "Simple Present", "focus": "Habits and routines"},
+    {"number": 13, "level": "Basic 2 (A1+)", "title": "Likes and Dislikes", "focus": "I like, I don't like"},
+    {"number": 14, "level": "Basic 2 (A1+)", "title": "Food", "focus": "Common food vocabulary"},
+    {"number": 15, "level": "Basic 2 (A1+)", "title": "Restaurant Conversation", "focus": "Ordering food and polite requests"},
+    {"number": 16, "level": "Basic 2 (A1+)", "title": "Shopping", "focus": "Prices, sizes, and buying items"},
+    {"number": 17, "level": "Basic 2 (A1+)", "title": "Weather", "focus": "It's sunny, rainy, cold, hot"},
+    {"number": 18, "level": "Basic 2 (A1+)", "title": "House Vocabulary", "focus": "Rooms and objects at home"},
+    {"number": 19, "level": "Basic 2 (A1+)", "title": "City Vocabulary", "focus": "Places around town"},
+    {"number": 20, "level": "Basic 2 (A1+)", "title": "Review + Speaking Test", "focus": "Review routines, likes, food, shopping, weather, house, and city"},
+    {"number": 21, "level": "Intermediate 1 (A2)", "title": "Present Continuous", "focus": "Actions happening now"},
+    {"number": 22, "level": "Intermediate 1 (A2)", "title": "Past Simple", "focus": "Talking about the past"},
+    {"number": 23, "level": "Intermediate 1 (A2)", "title": "Regular Verbs", "focus": "Past forms with -ed"},
+    {"number": 24, "level": "Intermediate 1 (A2)", "title": "Irregular Verbs", "focus": "Common irregular past forms"},
+    {"number": 25, "level": "Intermediate 1 (A2)", "title": "Talking About Experiences", "focus": "Personal experiences"},
+    {"number": 26, "level": "Intermediate 1 (A2)", "title": "Travel English", "focus": "Useful travel situations"},
+    {"number": 27, "level": "Intermediate 1 (A2)", "title": "Airport English", "focus": "Check-in, boarding, luggage"},
+    {"number": 28, "level": "Intermediate 1 (A2)", "title": "Hotel English", "focus": "Booking and hotel requests"},
+    {"number": 29, "level": "Intermediate 1 (A2)", "title": "Giving Directions", "focus": "Directions and locations"},
+    {"number": 30, "level": "Intermediate 1 (A2)", "title": "Review", "focus": "Review present continuous, past, travel, hotel, and directions"},
+    {"number": 31, "level": "Intermediate 2 (B1)", "title": "Future (Will)", "focus": "Future decisions and predictions"},
+    {"number": 32, "level": "Intermediate 2 (B1)", "title": "Going To", "focus": "Plans and intentions"},
+    {"number": 33, "level": "Intermediate 2 (B1)", "title": "Comparatives", "focus": "Bigger, better, more expensive"},
+    {"number": 34, "level": "Intermediate 2 (B1)", "title": "Superlatives", "focus": "The best, the most important"},
+    {"number": 35, "level": "Intermediate 2 (B1)", "title": "Modal Verbs", "focus": "Ability, advice, obligation"},
+    {"number": 36, "level": "Intermediate 2 (B1)", "title": "Can / Could", "focus": "Ability and polite requests"},
+    {"number": 37, "level": "Intermediate 2 (B1)", "title": "Should / Must", "focus": "Advice and obligation"},
+    {"number": 38, "level": "Intermediate 2 (B1)", "title": "Job Interviews", "focus": "Common interview questions"},
+    {"number": 39, "level": "Intermediate 2 (B1)", "title": "Phone Calls", "focus": "Professional phone language"},
+    {"number": 40, "level": "Intermediate 2 (B1)", "title": "Review + Speaking", "focus": "Review future, comparisons, modals, interviews, and calls"},
+    {"number": 41, "level": "Upper Intermediate (B2)", "title": "Present Perfect", "focus": "Life experience and recent actions"},
+    {"number": 42, "level": "Upper Intermediate (B2)", "title": "Present Perfect vs Past Simple", "focus": "Experience vs finished past"},
+    {"number": 43, "level": "Upper Intermediate (B2)", "title": "Passive Voice", "focus": "Focus on actions and results"},
+    {"number": 44, "level": "Upper Intermediate (B2)", "title": "First Conditional", "focus": "Real future possibilities"},
+    {"number": 45, "level": "Upper Intermediate (B2)", "title": "Second Conditional", "focus": "Hypothetical situations"},
+    {"number": 46, "level": "Upper Intermediate (B2)", "title": "Phrasal Verbs", "focus": "Common phrasal verbs"},
+    {"number": 47, "level": "Upper Intermediate (B2)", "title": "Business English", "focus": "Professional vocabulary"},
+    {"number": 48, "level": "Upper Intermediate (B2)", "title": "Meetings", "focus": "Participating in meetings"},
+    {"number": 49, "level": "Upper Intermediate (B2)", "title": "Presentations", "focus": "Presenting ideas clearly"},
+    {"number": 50, "level": "Upper Intermediate (B2)", "title": "Review", "focus": "Review B2 grammar and professional communication"},
+    {"number": 51, "level": "Advanced (C1)", "title": "Advanced Vocabulary", "focus": "Precise and expressive vocabulary"},
+    {"number": 52, "level": "Advanced (C1)", "title": "Idioms", "focus": "Common idiomatic expressions"},
+    {"number": 53, "level": "Advanced (C1)", "title": "Slang", "focus": "Natural informal English"},
+    {"number": 54, "level": "Advanced (C1)", "title": "Storytelling", "focus": "Narrative structure and flow"},
+    {"number": 55, "level": "Advanced (C1)", "title": "Debate", "focus": "Arguing and defending opinions"},
+    {"number": 56, "level": "Advanced (C1)", "title": "Persuasion", "focus": "Convincing language"},
+    {"number": 57, "level": "Advanced (C1)", "title": "Advanced Listening", "focus": "Understanding natural speech"},
+    {"number": 58, "level": "Advanced (C1)", "title": "Academic English", "focus": "Formal and academic communication"},
+    {"number": 59, "level": "Advanced (C1)", "title": "Public Speaking", "focus": "Speaking clearly to an audience"},
+    {"number": 60, "level": "Advanced (C1)", "title": "Review", "focus": "Review advanced communication skills"},
+    {"number": 61, "level": "Fluent Conversation (C1/C2)", "title": "Politics", "focus": "Discussing political ideas respectfully"},
+    {"number": 62, "level": "Fluent Conversation (C1/C2)", "title": "Technology", "focus": "Technology trends and impact"},
+    {"number": 63, "level": "Fluent Conversation (C1/C2)", "title": "Artificial Intelligence", "focus": "AI vocabulary and opinions"},
+    {"number": 64, "level": "Fluent Conversation (C1/C2)", "title": "Psychology", "focus": "Behavior, emotions, and the mind"},
+    {"number": 65, "level": "Fluent Conversation (C1/C2)", "title": "Philosophy", "focus": "Abstract ideas and reasoning"},
+    {"number": 66, "level": "Fluent Conversation (C1/C2)", "title": "Business", "focus": "Business strategy and communication"},
+    {"number": 67, "level": "Fluent Conversation (C1/C2)", "title": "Leadership", "focus": "Leadership language and scenarios"},
+    {"number": 68, "level": "Fluent Conversation (C1/C2)", "title": "Negotiation", "focus": "Persuasion and compromise"},
+    {"number": 69, "level": "Fluent Conversation (C1/C2)", "title": "Cultural Differences", "focus": "Cross-cultural communication"},
+    {"number": 70, "level": "Fluent Conversation (C1/C2)", "title": "Final Assessment", "focus": "Final speaking and communication assessment"},
+]
+
+CURRICULUM_BY_NUMBER = {
+    lesson["number"]: lesson
+    for lesson in CURRICULUM
+}
+
+PLACEMENT_TEST_QUESTIONS_BY_LEVEL = {
+    "Basic": [
+        "Pergunta 1 de 5: escreva uma frase em ingles que voce sabe. Se nao souber, nao tem problema: pode me dizer que nao sabe.",
+        "Pergunta 2 de 5: como voce diria 'Meu nome e ...' em ingles?",
+        "Pergunta 3 de 5: tente responder em ingles: Where are you from?",
+        "Pergunta 4 de 5: escreva uma frase simples sobre voce. Pode ser bem curta.",
+        "Pergunta 5 de 5: tente dizer em ingles uma coisa que voce gosta. Se nao souber, pode responder em portugues.",
+    ],
+    "Basic 2": [
+        "Pergunta 1 de 5: escreva uma frase se apresentando em ingles.",
+        "Pergunta 2 de 5: responda em ingles: What do you do every day?",
+        "Pergunta 3 de 5: escreva 3 coisas que voce gosta em ingles.",
+        "Pergunta 4 de 5: como voce pediria comida em um restaurante?",
+        "Pergunta 5 de 5: escreva uma frase sobre o clima de hoje.",
+    ],
+    "Intermediate": [
+        "Pergunta 1 de 5: introduce yourself in 2 short sentences.",
+        "Pergunta 2 de 5: What did you do yesterday?",
+        "Pergunta 3 de 5: What are you doing this week?",
+        "Pergunta 4 de 5: Tell me about a travel experience or a place you want to visit.",
+        "Pergunta 5 de 5: Write one question you would ask at a hotel or airport.",
+    ],
+    "Advanced": [
+        "Question 1 of 5: introduce yourself and explain your English goal.",
+        "Question 2 of 5: describe a challenge you faced recently and how you handled it.",
+        "Question 3 of 5: give your opinion about technology in everyday life.",
+        "Question 4 of 5: write one sentence using a conditional idea, such as 'If I had more time...'.",
+        "Question 5 of 5: explain what makes communication effective in business or study.",
+    ],
+    "Fluent": [
+        "Question 1 of 5: introduce yourself naturally and explain what you want to improve.",
+        "Question 2 of 5: give your opinion about artificial intelligence in education.",
+        "Question 3 of 5: describe a disagreement and how you would negotiate a solution.",
+        "Question 4 of 5: explain a cultural difference you find interesting.",
+        "Question 5 of 5: tell a short story using natural connectors like however, although, and eventually.",
+    ],
+}
+
+
+def estimate_level_from_study_history(message: str):
+    text = (message or "").strip().lower()
+    text = unicodedata.normalize("NFKD", text)
+    text = "".join(char for char in text if not unicodedata.combining(char))
+
+    year_match = re.search(r"(\d+)\s*(ano|anos|year|years)", text)
+    month_match = re.search(r"(\d+)\s*(mes|meses|month|months)", text)
+
+    years = int(year_match.group(1)) if year_match else 0
+    months = int(month_match.group(1)) if month_match else 0
+    total_months = years * 12 + months
+
+    if total_months >= 36:
+        return "Advanced"
+
+    if total_months >= 12:
+        return "Intermediate"
+
+    if total_months >= 3:
+        return "Basic 2"
+
+    if is_negative(text) or "nunca" in text or "zero" in text:
+        return "Basic"
+
+    if "fluente" in text or "fluent" in text or "c2" in text:
+        return "Fluent"
+
+    if "avanc" in text or "advanced" in text or "c1" in text:
+        return "Advanced"
+
+    if "intermedi" in text or "b1" in text or "b2" in text:
+        return "Intermediate"
+
+    if "basic 2" in text or "básico 2" in text or "a1+" in text:
+        return "Basic 2"
+
+    if "basico" in text or "básico" in text or "iniciante" in text or "a1" in text:
+        return "Basic"
+
+    return "Basic"
+
+
+def get_placement_questions(level: str):
+    return PLACEMENT_TEST_QUESTIONS_BY_LEVEL.get(
+        level,
+        PLACEMENT_TEST_QUESTIONS_BY_LEVEL["Basic"]
+    )
+
+
+def count_answer_words(message: str):
+    return len(re.findall(r"[A-Za-zÀ-ÿ']+", message or ""))
+
+
+def is_valid_placement_answer(level: str, question_index: int, message: str):
+    text = (message or "").strip()
+
+    if count_answer_words(text) == 0:
+        return False
+
+    normalized_level = level or "Basic"
+
+    if normalized_level == "Basic" and question_index == 0:
+        return is_negative(text) or count_answer_words(text) >= 2
+
+    if normalized_level in {"Basic", "Basic 2"}:
+        return len(text) >= 3
+
+    return count_answer_words(text) >= 2
+
+
+def repeat_placement_question(level: str, question_index: int):
+    questions = get_placement_questions(level)
+    question = questions[question_index]
+
+    if level == "Basic" and question_index == 0:
+        return (
+            "Acho que essa resposta veio incompleta.\n\n"
+            "Escreva uma frase em ingles que voce sabe. "
+            "Se nao souber, pode responder: nao sei."
+        )
+
+    return (
+        "Acho que essa resposta veio incompleta.\n\n"
+        f"Vamos tentar de novo: {question}"
+    )
+
+
+def get_start_lesson_for_level(level: str):
+    normalized = (level or "").strip().lower()
+
+    if "basic 2" in normalized or "a1+" in normalized:
+        return 11
+
+    if "intermediate 2" in normalized or "b1" in normalized:
+        return 31
+
+    if "upper" in normalized or "b2" in normalized:
+        return 41
+
+    if "fluent" in normalized or "fluente" in normalized or "c2" in normalized:
+        return 61
+
+    if "advanced" in normalized or "avanc" in normalized or "c1" in normalized:
+        return 51
+
+    if "intermediate" in normalized or "a2" in normalized:
+        return 21
+
+    return 1
+
+
+def detect_requested_level_change(message: str):
+    text = normalize_intent_text(message)
+
+    change_intent_patterns = [
+        r"\bmudar\b",
+        r"\btrocar\b",
+        r"\bir para\b",
+        r"\bir pro\b",
+        r"\bir pra\b",
+        r"\bvoltar para\b",
+        r"\bvoltar pro\b",
+        r"\bquero.*nivel\b",
+        r"\bprefiro.*nivel\b",
+        r"\bnivel\b",
+    ]
+
+    if not any(re.search(pattern, text) for pattern in change_intent_patterns):
+        return None
+
+    if re.search(r"\b(fluente|fluent|c2)\b", text):
+        return "Fluent"
+
+    if re.search(r"\b(avancado|advanced|c1)\b", text):
+        return "Advanced"
+
+    if re.search(r"\b(intermediario|intermediate|a2|b1|b2)\b", text):
+        return "Intermediate"
+
+    if re.search(r"\b(basic 2|basico 2|a1\+)\b", text):
+        return "Basic 2"
+
+    if re.search(r"\b(basico|basic|iniciante|inicio|comeco|comecar do zero|a1)\b", text):
+        return "Basic"
+
+    return None
+
+
+def is_lesson_start_request(message: str):
+    text = normalize_intent_text(message)
+    return any(
+        re.search(pattern, text)
+        for pattern in [
+            r"\bvamos comecar\b",
+            r"\bcomecar\b",
+            r"\bcomeçar\b",
+            r"\bstart\b",
+            r"\blet'?s start\b",
+            r"\biniciar\b",
+        ]
+    )
+
+
+def get_current_lesson(student: StudentDB):
+    lesson_number = getattr(student, "current_lesson", None)
+
+    if not lesson_number:
+        lesson_number = get_start_lesson_for_level(
+            getattr(student, "level", None)
+        )
+
+    lesson_number = max(1, min(int(lesson_number), 70))
+
+    return CURRICULUM_BY_NUMBER.get(lesson_number, CURRICULUM_BY_NUMBER[1])
+
+
+def get_lesson_context(student: StudentDB):
+    lesson = get_current_lesson(student)
+    next_lesson = CURRICULUM_BY_NUMBER.get(lesson["number"] + 1)
+
+    next_lesson_text = "This is the final lesson."
+
+    if next_lesson:
+        next_lesson_text = (
+            f"Next topic: {next_lesson['title']}."
+        )
+
+    return (
+        f"Current structured lesson:\n"
+        f"- Topic ({lesson['level']}): {lesson['title']}\n"
+        f"- Focus: {lesson['focus']}\n"
+        f"- {next_lesson_text}"
+    )
+
+
+def format_lesson_title(lesson):
+    return lesson["title"]
+
+
+LESSON_STAGES = [
+    "intro",
+    "vocabulary",
+    "grammar",
+    "examples",
+    "practice",
+    "correction",
+    "challenge",
+]
+
+
+def get_lesson_stage(student: StudentDB):
+    stage = getattr(student, "lesson_stage", None) or "intro"
+
+    if stage not in LESSON_STAGES:
+        return "intro"
+
+    return stage
+
+
+def advance_lesson_stage(student: StudentDB):
+    current_stage = get_lesson_stage(student)
+    current_index = LESSON_STAGES.index(current_stage)
+
+    if current_index < len(LESSON_STAGES) - 1:
+        student.lesson_stage = LESSON_STAGES[current_index + 1]
+    else:
+        student.lesson_stage = "practice"
+
+
+def reset_lesson_flow(student: StudentDB):
+    student.lesson_stage = "intro"
+    student.messages_in_current_lesson = 0
+
+
+def update_lesson_engagement(student: StudentDB):
+    student.messages_in_current_lesson = (
+        getattr(student, "messages_in_current_lesson", 0) or 0
+    ) + 1
+    student.engagement_minutes = (
+        getattr(student, "engagement_minutes", 0) or 0
+    ) + 2
+
+    if (student.messages_in_current_lesson or 0) % 4 == 0:
+        advance_lesson_stage(student)
+
+    if (
+        get_lesson_stage(student) == "challenge"
+        and (student.messages_in_current_lesson or 0) >= 14
+        and (student.current_lesson or 1) < 70
+    ):
+        student.current_lesson = (student.current_lesson or 1) + 1
+        reset_lesson_flow(student)
+
+
+def get_onboarding_notes(student: StudentDB):
+    try:
+        notes = json.loads(student.onboarding_notes or "[]")
+    except json.JSONDecodeError:
+        notes = []
+
+    if not isinstance(notes, list):
+        return []
+
+    return notes
+
+
+def add_onboarding_note(student: StudentDB, key: str, value: str):
+    notes = get_onboarding_notes(student)
+    notes.append(
+        {
+            "key": key,
+            "value": value,
+            "created_at": datetime.utcnow().isoformat()
+        }
+    )
+    student.onboarding_notes = json.dumps(notes, ensure_ascii=False)
+
+
+def get_latest_onboarding_note(student: StudentDB, key: str):
+    notes = get_onboarding_notes(student)
+
+    for note in reversed(notes):
+        if note.get("key") == key:
+            return note.get("value", "")
+
+    return ""
+
+
+def is_affirmative(message: str):
+    text = (message or "").strip().lower()
+    return any(
+        word in text
+        for word in ["sim", "quero", "pode", "vamos", "yes", "ok", "claro", "bora"]
+    )
+
+
+def is_negative(message: str):
+    text = (message or "").strip().lower()
+    return any(
+        word in text
+        for word in ["nao", "não", "prefiro nao", "agora nao", "no"]
+    )
+
+
+def looks_like_english_message(message: str):
+    text = (message or "").strip().lower()
+
+    if len(text.split()) < 3:
+        return False
+
+    portuguese_markers = [
+        "voce", "você", "nao", "não", "quero", "aula", "ingles", "inglês",
+        "porque", "obrigado", "obrigada", "comecar", "começar"
+    ]
+
+    if any(marker in text for marker in portuguese_markers):
+        return False
+
+    english_markers = [
+        " i ", " i'm ", " my ", " you ", " are ", " is ", " want ", " need ",
+        " like ", " have ", " study ", " english ", " hello ", " hi ",
+        "good morning", "good afternoon", "good evening", "where are",
+        "what is", "what's", "from brazil"
+    ]
+
+    padded_text = f" {text} "
+
+    return any(marker in padded_text for marker in english_markers)
+
+
+def can_offer_full_english_mode(student):
+    return (student.level or "").strip() in {"Advanced", "Fluent"}
+
+
+def normalize_person_name(value: str):
+    text = (value or "").strip().lower()
+    text = unicodedata.normalize("NFKD", text)
+    text = "".join(
+        char for char in text
+        if not unicodedata.combining(char)
+    )
+    return re.sub(r"[^a-z\s]", "", text).strip()
+
+
+def looks_like_name_correction(student: StudentDB, message: str):
+    current_name = normalize_person_name(getattr(student, "name", "") or "")
+    candidate_text = extract_name_candidate(message)
+
+    if has_invalid_name_content(candidate_text):
+        return False
+
+    new_name = normalize_person_name(candidate_text)
+
+    if not current_name or not new_name:
+        return False
+
+    words = new_name.split()
+
+    if len(words) > 4:
+        return False
+
+    blocked_goal_words = {
+        "viajar", "viagem", "trabalho", "negocios", "conversacao",
+        "entrevista", "estudo", "estudar", "aprender", "ingles",
+        "profissional", "faculdade", "escola"
+    }
+
+    if any(word in blocked_goal_words for word in words):
+        return False
+
+    full_similarity = SequenceMatcher(None, current_name, new_name).ratio()
+
+    if full_similarity >= 0.72:
+        return True
+
+    current_words = current_name.split()
+
+    return any(
+        SequenceMatcher(None, old_word, new_word).ratio() >= 0.82
+        for old_word in current_words
+        for new_word in words
+    )
+
+
+def normalize_intent_text(value: str):
+    text = (value or "").strip().lower()
+    text = unicodedata.normalize("NFKD", text)
+    text = "".join(
+        char for char in text
+        if not unicodedata.combining(char)
+    )
+    return text
+
+
+def is_affirmative(message: str):
+    text = normalize_intent_text(message)
+    return any(
+        re.search(pattern, text)
+        for pattern in [
+            r"\bsim\b",
+            r"\byes\b",
+            r"\bok\b",
+            r"\bclaro\b",
+            r"\bpode\b",
+            r"\bquero\b",
+            r"\bvamos\b",
+            r"\bbora\b",
+        ]
+    )
+
+
+def is_negative(message: str):
+    text = normalize_intent_text(message)
+    return any(
+        re.search(pattern, text)
+        for pattern in [
+            r"\bnao\b",
+            r"\bno\b",
+            r"\bprefiro nao\b",
+            r"\bagora nao\b",
+            r"\bnunca\b",
+        ]
+    )
+
+
+def is_unclear_yes_no(message: str):
+    return not is_affirmative(message) and not is_negative(message)
+
+
+def is_study_experience_affirmative(message: str):
+    text = normalize_intent_text(message)
+    return any(
+        re.search(pattern, text)
+        for pattern in [
+            r"\bsim\b",
+            r"\bja\b",
+            r"\byes\b",
+            r"\bum pouco\b",
+            r"\bpouco\b",
+            r"\balguns meses\b",
+            r"\balguns anos\b",
+        ]
+    )
+
+
+def is_unclear_study_experience(message: str):
+    return not is_study_experience_affirmative(message) and not is_negative(message)
+
+
+def is_probable_learning_goal(message: str):
+    text = normalize_intent_text(message)
+
+    if len(text) < 3:
+        return False
+
+    if text in {"ok", "sim", "nao", "yes", "no"}:
+        return False
+
+    return True
+
+
+def is_number_without_time_unit(message: str):
+    text = normalize_intent_text(message)
+    return bool(re.fullmatch(r"\d+", text))
+
+
+def extract_name_candidate(message: str):
+    text = (message or "").strip()
+    cleaned = re.sub(
+        r"(?i)^(meu nome e|meu nome é|me chamo|sou|corrigindo|correcao|correção|na verdade|quis dizer)\s*[:,-]?\s*",
+        "",
+        text
+    ).strip()
+    return cleaned or text
+
+
+def has_invalid_name_content(message: str):
+    raw_text = (message or "").strip()
+    normalized_text = normalize_intent_text(raw_text)
+
+    if re.search(r"\d", raw_text):
+        return True
+
+    blocked_words = {
+        "oi", "ola", "hello", "hi", "bom", "dia", "boa", "tarde", "noite",
+        "sim", "nao", "yes", "no", "ok", "quero", "aprender", "ingles",
+        "viajar", "viagem", "trabalho", "estudar", "conversacao", "negocios",
+        "teste", "testando", "asdf", "abc",
+        "porra", "caralho", "merda", "bosta", "fdp", "puta", "puto",
+        "cu", "cacete", "desgraca", "idiota", "burro",
+    }
+
+    words = re.findall(r"[a-z]+", normalized_text)
+
+    return any(word in blocked_words for word in words)
+
+
+def is_probable_person_name(message: str):
+    candidate_text = extract_name_candidate(message)
+
+    if has_invalid_name_content(candidate_text):
+        return False
+
+    candidate = normalize_person_name(candidate_text)
+
+    if not candidate:
+        return False
+
+    words = candidate.split()
+
+    if len(words) > 4:
+        return False
+
+    blocked_words = {
+        "oi", "ola", "hello", "hi", "bom", "dia", "boa", "tarde", "noite",
+        "sim", "nao", "yes", "no", "ok", "quero", "aprender", "ingles",
+        "viajar", "trabalho", "estudar", "conversacao", "negocios"
+    }
+
+    if any(word in blocked_words for word in words):
+        return False
+
+    return all(len(word) >= 2 for word in words)
+
+
+def evaluate_placement_test(student: StudentDB):
+    client = get_openai_client()
+    notes = get_onboarding_notes(student)
+
+    response = client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=[
+            {
+                "role": "system",
+                "content": """
+You are an English placement test evaluator.
+
+Analyze the student's onboarding notes and placement test answers.
+The student may answer in Portuguese, English, or a mix.
+If the student reports having no English contact or only knows isolated words, return Basic.
+Do not punish the student for answering in Portuguese; infer level from evidence of English ability.
+
+Return ONLY ONE level:
+
+Basic
+Basic 2
+Intermediate
+Advanced
+Fluent
+"""
+            },
+            {
+                "role": "user",
+                "content": json.dumps(notes, ensure_ascii=False)
+            }
+        ]
+    )
+
+    return response.choices[0].message.content.strip()
+
+
+def evaluate_placement_test_details(student: StudentDB):
+    client = get_openai_client()
+    notes = get_onboarding_notes(student)
+
+    response = client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=[
+            {
+                "role": "system",
+                "content": """
+You are an English placement test evaluator.
+
+Analyze the student's onboarding notes and placement test answers.
+The student may answer in Portuguese, English, or a mix.
+If the student reports having no English contact or only knows isolated words, return Basic.
+
+Return ONLY valid JSON with this shape:
+{
+  "level": "Basic | Basic 2 | Intermediate | Advanced | Fluent",
+  "reason": "short explanation of why this level was chosen",
+  "strengths": ["short strength 1", "short strength 2"],
+  "mistakes": [
+    {
+      "original": "student sentence or phrase",
+      "correction": "corrected version",
+      "explanation": "short explanation"
+    }
+  ]
+}
+
+Keep reasons and explanations short.
+If the chosen level is Basic, Basic 2, or Intermediate, write reason, strengths, and mistake explanations in Portuguese.
+If the chosen level is Advanced or Fluent, write reason, strengths, and mistake explanations in English.
+If there are no clear English mistakes because the student wrote very little, explain that the level is based on limited evidence.
+"""
+            },
+            {
+                "role": "user",
+                "content": json.dumps(notes, ensure_ascii=False)
+            }
+        ]
+    )
+
+    content = response.choices[0].message.content.strip()
+
+    try:
+        data = json.loads(content)
+    except json.JSONDecodeError:
+        return {
+            "level": evaluate_placement_test(student),
+            "reason": "I based this level on your answers during the quick test.",
+            "strengths": [],
+            "mistakes": []
+        }
+
+    level = data.get("level", "Basic")
+
+    if level not in {"Basic", "Basic 2", "Intermediate", "Advanced", "Fluent"}:
+        data["level"] = "Basic"
+
+    return data
+
+
+def format_placement_feedback(details: dict, language: str):
+    level = details.get("level", "Basic")
+    reason = details.get("reason") or "I based this on your answers in the test."
+    strengths = details.get("strengths") or []
+    mistakes = details.get("mistakes") or []
+    advanced_feedback = level in {"Advanced", "Fluent"}
+
+    if language == "English" and advanced_feedback:
+        lines = [
+            "Thanks for answering. I have a clearer picture now.",
+            "",
+            f"Your current English level is: {level}",
+            f"Why I chose this level: {reason}",
+        ]
+
+        if strengths:
+            lines.append("")
+            lines.append("What you did well:")
+            lines.extend(f"- {item}" for item in strengths[:2])
+
+        if mistakes:
+            lines.append("")
+            lines.append("A few corrections:")
+
+            for mistake in mistakes[:2]:
+                original = mistake.get("original", "")
+                correction = mistake.get("correction", "")
+                explanation = mistake.get("explanation", "")
+                lines.append(f"- {original} -> {correction}")
+                if explanation:
+                    lines.append(f"  {explanation}")
+
+        return "\n".join(lines)
+
+    lines = [
+        "Obrigado por responder. Agora ficou mais claro.",
+        "",
+        f"Seu nivel atual de ingles e: {level}",
+        f"Por que escolhi esse nivel: {reason}",
+    ]
+
+    if strengths:
+        lines.append("")
+        lines.append("Pontos positivos:")
+        lines.extend(f"- {item}" for item in strengths[:2])
+
+    if mistakes:
+        lines.append("")
+        lines.append("Algumas correcoes:")
+
+        for mistake in mistakes[:2]:
+            original = mistake.get("original", "")
+            correction = mistake.get("correction", "")
+            explanation = mistake.get("explanation", "")
+            lines.append(f"- {original} -> {correction}")
+            if explanation:
+                lines.append(f"  {explanation}")
+
+    return "\n".join(lines)
+
 
 
 # =========================
@@ -160,9 +997,18 @@ def send_whatsapp_message(phone: str, text: str):
         print("Erro ao enviar mensagem pela Meta:", response.text)
         print("Telefone recebido:", phone)
         print("Telefone usado no envio:", recipient_phone)
+
+        try:
+            meta_error = response.json().get("error", {})
+            error_message = meta_error.get("message", "Erro desconhecido da Meta")
+            error_code = meta_error.get("code", response.status_code)
+        except ValueError:
+            error_message = response.text
+            error_code = response.status_code
+
         raise HTTPException(
             status_code=502,
-            detail="Erro ao enviar mensagem pelo WhatsApp Cloud API"
+            detail=f"Erro ao enviar mensagem pelo WhatsApp Cloud API: {error_code} - {error_message}"
         )
 
     return response.json()
@@ -262,6 +1108,33 @@ def should_send_pronunciation_audio(question: str, answer: str):
     return any(trigger in text for trigger in triggers) or any(
         marker in text for marker in example_markers
     )
+
+
+def should_send_pronunciation_audio(question: str, answer: str):
+    text = (question or "").lower()
+
+    triggers = (
+        "como se diz",
+        "como fala",
+        "como eu digo",
+        "pronuncia",
+        "pronunciar",
+        "pronunciation",
+        "how do you say",
+        "how can i say",
+        "say in english",
+        "manda audio",
+        "mande audio",
+        "manda um audio",
+        "pode falar",
+        "nao entendi",
+        "não entendi",
+        "dificuldade",
+        "dificil entender",
+        "difícil entender",
+    )
+
+    return any(trigger in text for trigger in triggers)
 
 
 def build_pronunciation_audio_text(question: str, answer: str):
@@ -466,6 +1339,71 @@ def get_assessment_prompt(language: str):
     )
 
 
+def normalize_language_preference(value: str):
+    text = (value or "").strip().lower()
+
+    if text in {"2", "english", "ingles", "inglês"} or "engl" in text or "ingl" in text:
+        return "English"
+
+    if text in {"1", "portuguese", "portugues", "português"} or "port" in text:
+        return "Portuguese"
+
+    return "Adaptive"
+
+
+def get_language_instruction(language: str, level: str = "Basic"):
+    if language == "English":
+        return (
+            "Reply primarily in English. Do not switch to Portuguese unless the "
+            "student explicitly asks for Portuguese or seems completely stuck."
+        )
+
+    if language == "Portuguese":
+        return (
+            "Use Portuguese as the main explanation language. Still include simple "
+            "English practice sentences, but keep explanations in Portuguese."
+        )
+
+    normalized_level = (level or "").strip().lower()
+
+    if "fluent" in normalized_level or "fluente" in normalized_level or "c2" in normalized_level:
+        return "Use about 90% English and 10% Portuguese. Use Portuguese only if the student asks."
+
+    if "advanced" in normalized_level or "avanc" in normalized_level or "c1" in normalized_level:
+        return "Use about 80% English and 20% Portuguese. Use Portuguese only to clarify difficult points."
+
+    if "upper" in normalized_level or "b2" in normalized_level:
+        return "Use about 70% English and 30% Portuguese. Keep explanations concise."
+
+    if "intermediate" in normalized_level or "a2" in normalized_level or "b1" in normalized_level:
+        return "Use about 50% English and 50% Portuguese. Increase English gradually when the student responds well."
+
+    return (
+        "Use about 30% to 40% English and 60% to 70% Portuguese. Use very simple "
+        "English words and short sentences. Do not force long English answers from beginners."
+    )
+
+
+def get_assessment_prompt(language: str):
+    if language == "English":
+        return (
+            "Great!\n\n"
+            "Now I will do a quick assessment to understand your current English level.\n\n"
+            "Don't worry about mistakes. Answer as best as you can.\n\n"
+            "Tell me what you already know in English. You can write words, short phrases, or a simple sentence."
+        )
+
+    return (
+        "Otimo!\n\n"
+        "Agora vou fazer uma avaliacao rapida para entender seu nivel atual de ingles.\n\n"
+        "Nao se preocupe com erros. Pode responder em portugues, em ingles, ou misturado.\n\n"
+        "Me diga:\n"
+        "1. Voce ja estudou ingles antes?\n"
+        "2. Quais palavras ou frases em ingles voce ja conhece?\n"
+        "3. Se conseguir, escreva uma frase simples em ingles. Exemplo: My name is..."
+    )
+
+
 # =========================
 # PYDANTIC MODELS
 # =========================
@@ -545,6 +1483,23 @@ def parse_clock_time(value: str):
     return f"{hour:02d}:{minute:02d}"
 
 
+def parse_day_period_time(value: str):
+    text = (value or "").lower()
+    text = unicodedata.normalize("NFKD", text)
+    text = "".join(char for char in text if not unicodedata.combining(char))
+
+    if "manha" in text or "morning" in text:
+        return "09:00"
+
+    if "tarde" in text or "afternoon" in text:
+        return "14:00"
+
+    if "noite" in text or "night" in text or "evening" in text:
+        return "19:00"
+
+    return None
+
+
 def normalize_day_name(day_index: int):
     names = {
         0: "segunda-feira",
@@ -577,7 +1532,13 @@ def parse_lesson_schedule(message: str):
         lesson_time = parse_clock_time(chunk)
 
         if not lesson_time:
+            lesson_time = parse_day_period_time(chunk)
+
+        if not lesson_time:
             lesson_time = parse_clock_time(text)
+
+        if not lesson_time:
+            lesson_time = parse_day_period_time(text)
 
         if not lesson_time:
             lesson_time = "09:00"
@@ -903,14 +1864,24 @@ def save_learning_record_if_needed(
 # AI SERVICE
 # =========================
 
-def generate_ai_answer(student: StudentDB, question: str, db: Session):
+def generate_ai_answer(
+    student: StudentDB,
+    question: str,
+    db: Session,
+    ai_question: str | None = None
+):
     level = getattr(student, "level", None) or "Basic"
     language = normalize_language_preference(
         getattr(student, "preferred_language", None) or "Portuguese"
     )
-    language_instruction = get_language_instruction(language)
+    language_instruction = get_language_instruction(language, level)
     goal = getattr(student, "learning_goal", None) or "Conversation"
+    interests = getattr(student, "interests", None) or "not informed yet"
+    lesson_stage = get_lesson_stage(student)
+    engagement_minutes = getattr(student, "engagement_minutes", 0) or 0
+    lesson_messages = getattr(student, "messages_in_current_lesson", 0) or 0
     learning_summary = get_recent_learning_summary(student.id, db)
+    lesson_context = get_lesson_context(student)
 
     history = (
         db.query(ConversationDB)
@@ -924,28 +1895,100 @@ def generate_ai_answer(student: StudentDB, question: str, db: Session):
         {
             "role": "system",
             "content": f"""
-You are Ronan AI from WhatsUp English, an English teacher inside WhatsApp.
+You are WINGO from WhatsUp English, a friendly English tutor inside WhatsApp.
 
 Student profile:
 - Level: {level}
 - Preferred language: {language}
 - Learning goal: {goal}
+- Interests: {interests}
+- Current lesson stage: {lesson_stage}
+- Estimated engagement in lessons: {engagement_minutes} minutes
+- Messages in current lesson: {lesson_messages}
 
 Recent academic memory:
 {learning_summary}
 
+Structured course path:
+{lesson_context}
+
 Language rule:
 - {language_instruction}
+
+Wingo's personality:
+- Friendly, patient, and motivating.
+- Sound like a helpful tutor in a WhatsApp chat, not a formal school.
+- Be simple, human, and encouraging.
+- Celebrate small progress without exaggerating.
+- Make the student feel comfortable making mistakes.
+- Keep a light, positive tone.
+
+Lesson guidance:
+- Do not behave like a free open chat.
+- Lead the student through the current structured lesson.
+- Respect the current lesson stage. If the stage is intro, introduce the topic. If vocabulary, teach useful words. If grammar, explain the structure. If examples, show examples. If practice, ask the student to produce language. If correction, correct and reinforce. If challenge, finish with a small mission.
+- Start from the current lesson topic unless the student asks a direct urgent question.
+- If the student asks something unrelated, answer briefly and gently bring them back to the current lesson.
+- Teach one small point at a time, then ask one practice question.
+- If the student says "vamos comecar", "vamos começar", "start", or "let's start", begin the lesson topic directly. Do not ask "How are you today?" in this case.
+- Do not jump to future lessons unless the student explicitly asks for a preview.
+- Do not advance the course just because the student sent one answer; reinforce, correct, and practice first.
+- If the student asks "what should I study?" or "start the class", begin the current lesson.
+
+Standard Wingo lesson model:
+- Follow this structure for each lesson, but deliver it step by step through conversation.
+- Do not send the whole lesson at once.
+- Never output all labels in one message: Warm-up, Vocabulary, Grammar, Examples, Practice, Correction, Challenge.
+- Choose only the next step the student needs right now.
+- Keep each WhatsApp message under 90 words whenever possible.
+- Warm-up is only for scheduled class messages sent on the student's chosen days and times. Do not use a generic "How are you today?" when the student manually asks to start.
+- 2. New Vocabulary: teach up to 10 useful words connected to the current lesson.
+- 3. Grammar: give a clear explanation of the main structure. Include the formula, when to use it, common rules, and one important detail for the topic.
+- 4. Examples: give 3 realistic examples.
+- 5. Practice: ask questions and make the student answer using the lesson topic. Prefer text answers by default.
+- 6. Correction: correct mistakes gently and show the improved sentence.
+- 7. Challenge: finish with a small mission, such as "Tell me 5 things you did yesterday."
+- In WhatsApp chat, usually send only one section or one exercise per message.
+- After each student answer, decide whether to correct, give another practice item, or move to the next section.
+- For grammar topics such as Present Continuous, do not be too shallow. Explain the structure, for example: subject + verb to be + verb-ing; mention that -ing is added to the main verb; include spelling notes when useful, such as make -> making and run -> running.
+- After the explanation, ask only one practice question.
+
+Personalization:
+- Use the student's interests to create examples, short scenarios, and practice prompts.
+- If the student likes games, use examples with playing, winning, losing, streaming, characters, missions, and teams.
+- If the student likes music, use examples with listening, singing, playing instruments, concerts, bands, and lyrics.
+- If the student likes movies or series, use examples with watching, characters, scenes, episodes, and stories.
+- If the student mentions religion or church, be respectful and use neutral examples about community, routine, reading, music, and events. Do not debate beliefs.
+- If the student likes technology, use examples with apps, AI, work, coding, devices, and online conversations.
+- Combine the learning goal with interests. For example, travel + games can become "I am traveling to a gaming event."
+- Do not force personalization in every sentence. Use it naturally.
+
+Engagement:
+- Make the student spend time practicing by asking one small answer at a time.
+- Prefer short cycles: explain, example, ask, correct, ask again.
+- After a few good answers, briefly show progress such as "Voce ja praticou 3 frases hoje" or "Boa, +XP de pratica".
+- Do not invent exact scores unless the system gives them. You may mention progress qualitatively.
+- If the student seems tired or asks to stop, summarize what they learned and end kindly.
+
+Audio control:
+- Prefer text practice by default.
+- Do not ask for audio in every exercise.
+- Ask for at most one short voice note per lesson unless the student explicitly asks for more speaking practice.
+- When asking for audio, request one short voice note under 20 seconds.
+- Use audio mainly for pronunciation, speaking confidence, or final speaking checks.
+- If the student sends many voice notes in sequence, correct briefly and guide them back to text practice.
+- Do not ask for a voice note in the first lesson message.
+- Do not ask for voice notes in challenges unless the student asked for speaking practice.
 
 Teaching style:
 - Be warm, direct, and encouraging.
 - Keep the conversation natural, like a private tutor on WhatsApp.
 - Adapt vocabulary and grammar to the student's level.
-- Prefer short messages. Stay under 120 words.
+- Prefer short messages, but grammar explanations may use 120 to 180 words when needed for clarity.
 - Follow the language rule above even if the conversation history used another language.
 - Correct mistakes politely.
 - Always show a corrected version when the student makes a mistake.
-- When pronunciation practice would help, invite the student to send a short voice note.
+- Only invite the student to send a voice note if they explicitly ask for speaking or pronunciation practice.
 - If the user's message starts with "[Voice note transcription]", treat it as something the student spoke aloud. Correct the English naturally and encourage them to repeat the improved version.
 - Use the recent academic memory to review recurring mistakes naturally, but do not mention database records.
 - When a student repeats an old mistake, briefly remind them of the corrected pattern.
@@ -976,7 +2019,7 @@ Brand voice:
     messages.append(
         {
             "role": "user",
-            "content": question
+            "content": ai_question or question
         }
     )
 
@@ -988,6 +2031,15 @@ Brand voice:
     )
 
     answer = response.choices[0].message.content
+
+    if (
+        getattr(student, "current_stage", None) == 7
+        and (getattr(student, "messages_in_current_lesson", 0) or 0) in {4, 8, 12}
+    ):
+        answer = (
+            f"{answer}\n\n"
+            f"Progresso de hoje: voce ja trocou {student.messages_in_current_lesson} mensagens nesta aula."
+        )
 
     conversation = ConversationDB(
         student_id=student.id,
@@ -1077,6 +2129,9 @@ def generate_weekly_lesson(student: StudentDB, db: Session):
     client = get_openai_client()
     learning_summary = get_recent_learning_summary(student.id, db)
     seasonal_context = get_seasonal_context()
+    lesson_context = get_lesson_context(student)
+    interests = getattr(student, "interests", None) or "not informed yet"
+    lesson_stage = get_lesson_stage(student)
 
     response = client.chat.completions.create(
         model="gpt-4o-mini",
@@ -1087,17 +2142,27 @@ def generate_weekly_lesson(student: StudentDB, db: Session):
 Create one short personalized English mini-lesson for WhatsApp.
 
 Rules:
+- Use the current structured lesson as the main lesson theme.
 - Use the student's level, goal, recent academic memory, and seasonal context.
-- If there is a relevant commemorative date or holiday this week, make it the lesson theme.
-- Teach one new point.
-- Include a simple explanation, 2 examples, and 1 practice question.
-- Keep it under 130 words.
-- If useful, invite the student to send a voice note.
+- If there is a relevant commemorative date or holiday this week, connect it lightly to the current lesson only if it fits naturally.
+- Do NOT send the full lesson structure.
+- Do NOT include labels like Warm-up, Vocabulary, Grammar, Examples, Practice, Correction Invitation, or Challenge.
+- This message is for the student's scheduled class time, so a short warm-up is allowed.
+- Do not always ask "How are you today?". Vary the opening and connect it to the lesson topic.
+- Send only the first useful step of the lesson.
+- Start with one friendly sentence, introduce the current topic, and ask one simple question connected to the topic.
+- Use the student's interests naturally in the example or question when possible.
+- Respect the current lesson stage.
+- Keep it under 90 words.
+- Wait for the student's answer before teaching vocabulary or grammar.
+- Prefer text practice.
+- Do not ask for audio or voice notes in this first lesson message.
+- Do not use emojis.
 """
             },
             {
                 "role": "user",
-                "content": f"Student: {student.name}\nLevel: {student.level}\nGoal: {student.learning_goal}\nSeasonal context:\n{seasonal_context}\nMemory:\n{learning_summary}"
+                "content": f"Student: {student.name}\nLevel: {student.level}\nGoal: {student.learning_goal}\nInterests: {interests}\nLesson stage: {lesson_stage}\nStructured lesson:\n{lesson_context}\nSeasonal context:\n{seasonal_context}\nMemory:\n{learning_summary}"
             }
         ]
     )
@@ -1187,6 +2252,9 @@ def send_scheduled_lessons(db: Session, now: datetime):
                 continue
 
             try:
+                if not getattr(student, "lesson_stage", None):
+                    student.lesson_stage = "intro"
+                update_lesson_engagement(student)
                 message = generate_weekly_lesson(student, db)
                 send_whatsapp_message(student.phone, message)
 
@@ -1205,7 +2273,6 @@ async def academic_automation_loop():
 
         try:
             now = local_now()
-            send_daily_word_challenges(db, now)
             send_scheduled_lessons(db, now)
             send_weekly_quizzes(db, now)
         except Exception as error:
@@ -1264,6 +2331,11 @@ def register(student: Student, db: Session = Depends(get_db)):
     phone=student.phone,
     preferred_language=student.preferred_language,
     learning_goal=student.learning_goal,
+    interests="",
+    current_lesson=1,
+    lesson_stage="intro",
+    engagement_minutes=0,
+    messages_in_current_lesson=0,
     current_stage=0,
     last_activity=datetime.utcnow()
 )
@@ -1280,8 +2352,12 @@ def register(student: Student, db: Session = Depends(get_db)):
         "phone": new_student.phone,
         "preferred_language": new_student.preferred_language,
         "learning_goal": new_student.learning_goal,
+        "interests": new_student.interests,
         "level": new_student.level,
         "assessment_completed": new_student.assessment_completed,
+        "current_lesson": new_student.current_lesson,
+        "lesson_stage": new_student.lesson_stage,
+        "engagement_minutes": new_student.engagement_minutes,
         "current_stage": new_student.current_stage,
         "last_activity": new_student.last_activity
     }
@@ -1435,6 +2511,10 @@ def ranking(db: Session = Depends(get_db)):
             "name": student.name,
             "phone": student.phone,
             "level": student.level,
+            "interests": student.interests,
+            "current_lesson": student.current_lesson,
+            "lesson_stage": student.lesson_stage,
+            "engagement_minutes": student.engagement_minutes or 0,
             "xp": student.xp or 0,
             "streak_days": student.streak_days or 0,
         }
@@ -1627,6 +2707,11 @@ def get_or_create_whatsapp_student(phone: str, db: Session):
         phone=phone,
         preferred_language="Portuguese",
         learning_goal="Conversation",
+        interests="",
+        current_lesson=1,
+        lesson_stage="intro",
+        engagement_minutes=0,
+        messages_in_current_lesson=0,
         current_stage=0,
         last_activity=now
     )
@@ -1648,7 +2733,7 @@ def process_whatsapp_message(phone: str, message: str, db: Session):
 
         return (
             "Ola!\n\n"
-            "Eu sou o Ronan AI, professor virtual do WhatsUp English.\n\n"
+            "Eu sou o *WINGO*, seu professor de ingles no WhatsUp English.\n\n"
             "Vou te ajudar a aprender ingles de forma simples, pratica e no seu ritmo.\n\n"
             "Let's Bora!\n\n"
             "Primeiro, qual e o seu nome?"
@@ -1658,95 +2743,241 @@ def process_whatsapp_message(phone: str, message: str, db: Session):
     db.commit()
 
     if student.current_stage == 2:
-        student.name = message
+        if not is_probable_person_name(message):
+            return (
+                "Quase la. Me diga apenas seu nome.\n\n"
+                "Exemplo: Ronan"
+            )
+
+        student.name = extract_name_candidate(message)
         student.current_stage = 3
         db.commit()
 
         return (
             f"Prazer em conhecer voce, {student.name}!\n\n"
-            "Qual e o seu principal objetivo com o ingles?\n\n"
-            "1. Viagens\n"
-            "2. Trabalho\n"
-            "3. Negocios\n"
-            "4. Conversacao\n"
-            "5. Entrevistas de emprego\n"
-            "6. Estudos\n"
-            "7. Outro"
+            "Me conta com suas palavras: por que voce quer aprender ingles?"
         )
 
     if student.current_stage == 3:
+        if looks_like_name_correction(student, message):
+            student.name = extract_name_candidate(message)
+            db.commit()
+
+            return (
+                f"Obrigado, corrigi seu nome para {student.name}.\n\n"
+                "Agora me conta com suas palavras: por que voce quer aprender ingles?"
+            )
+
+        if not is_probable_learning_goal(message):
+            return (
+                "Me conta um pouco melhor seu objetivo com o ingles.\n\n"
+                "Pode escrever do seu jeito. Exemplo: quero viajar, trabalhar, conversar ou estudar fora."
+            )
+
         student.learning_goal = message
-        student.current_stage = 4
+        student.preferred_language = "Adaptive"
+        add_onboarding_note(student, "learning_goal", message)
+        student.current_stage = 35
         db.commit()
 
         return (
-            "Perfeito!\n\n"
-            "Agora me diga:\n\n"
-            "Voce prefere continuar nossas conversas em:\n\n"
-            "Portugues\n"
-            "Ingles\n"
-            "Os dois"
+            "Legal. Para eu deixar suas aulas mais interessantes, me conta do que voce gosta.\n\n"
+            "Pode ser musica, filmes, series, games, futebol, tecnologia, igreja, viagens, livros..."
         )
 
+    if student.current_stage == 35:
+        if not is_probable_learning_goal(message):
+            return (
+                "Me fala pelo menos um interesse seu.\n\n"
+                "Exemplo: gosto de games, musica e filmes."
+            )
+
+        student.interests = message
+        add_onboarding_note(student, "interests", message)
+        student.current_stage = 4
+        db.commit()
+
+        return "Boa. Vou usar isso para personalizar exemplos e praticas. Voce ja estudou ingles antes, mesmo que por pouco tempo?"
+
     if student.current_stage == 4:
-        student.preferred_language = normalize_language_preference(message)
+        add_onboarding_note(student, "studied_before", message)
+        if is_negative(message):
+            student.level = "Basic"
+            student.current_stage = 6
+            db.commit()
+
+            return (
+                "Sem problema. Vamos comecar bem do inicio e no seu ritmo.\n\n"
+                "Entao seu nivel de ingles provavelmente e: Basic.\n\n"
+                "Voce quer fazer um teste rapidinho de nivel agora? "
+                "Sao 5 perguntas curtas, uma por vez."
+            )
+
+        if is_unclear_study_experience(message):
+            return (
+                "So para eu entender melhor: voce ja estudou ingles antes?\n\n"
+                "Pode responder sim, nao ou um pouco."
+            )
+
         student.current_stage = 5
         db.commit()
 
-        return get_assessment_prompt(student.preferred_language)
+        return "Legal. E por quanto tempo voce estudou? Se souber, me diga tambem qual nivel voce acha que tem hoje."
 
     assessment_completed = getattr(student, "assessment_completed", "No")
 
     if student.current_stage == 5 and assessment_completed != "Yes":
-        client = get_openai_client()
+        if is_number_without_time_unit(message):
+            return (
+                "Voce quis dizer meses ou anos?\n\n"
+                "Exemplo: 5 meses, 5 anos, ou: acho que sou basico."
+            )
 
-        assessment_response = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[
-                {
-                    "role": "system",
-                    "content": """
-You are an English placement test evaluator.
-
-Analyze the student's English answer.
-
-Return ONLY ONE level:
-
-Basic
-Basic 2
-Intermediate
-Advanced
-"""
-                },
-                {
-                    "role": "user",
-                    "content": message
-                }
-            ]
-        )
-
-        level = assessment_response.choices[0].message.content.strip()
-
-        student.level = level
-        student.assessment_completed = "Yes"
-        student.current_stage = 6
+        add_onboarding_note(student, "study_time_and_self_level", message)
+        probable_level = estimate_level_from_study_history(message)
+        student.level = probable_level
+        student.current_stage = 81 if probable_level in {"Advanced", "Fluent"} else 6
         db.commit()
 
+        if probable_level in {"Advanced", "Fluent"}:
+            return (
+                f"Perfeito. Entao seu nivel de ingles provavelmente e: {probable_level}.\n\n"
+                "Voce quer continuar a aula em ingles?"
+            )
+
         return (
-            f"Excelente!\n\n"
-            f"Seu nivel atual de ingles e: {level}\n\n"
-            "Agora vou preparar duas aulas por semana para voce.\n\n"
-            "Quais sao os melhores dias e horarios?\n"
-            "Exemplo: segunda 9h e quinta 19h"
+            f"Perfeito. Entao seu nivel de ingles provavelmente e: {probable_level}.\n\n"
+            "Para confirmar melhor, voce quer fazer um teste rapidinho agora? "
+            "Sao 5 perguntas curtas, uma por vez."
         )
 
-    if student.current_stage == 6:
+    if student.current_stage == 81 and assessment_completed != "Yes":
+        if is_affirmative(message):
+            student.preferred_language = "English"
+            student.current_stage = 6
+            db.commit()
+
+            return (
+                "Perfect. I will continue mainly in English.\n\n"
+                "Would you like to take a quick level test now? "
+                "It has 5 short questions, one at a time."
+            )
+
+        if is_negative(message):
+            student.preferred_language = "Adaptive"
+            student.current_stage = 6
+            db.commit()
+
+            return (
+                "Combinado. Vou misturar portugues e ingles quando fizer sentido.\n\n"
+                "Voce quer fazer um teste rapidinho de nivel agora? "
+                "Sao 5 perguntas curtas, uma por vez."
+            )
+
+        return "Voce quer continuar a aula em ingles? Pode responder sim ou nao."
+
+    if student.current_stage == 6 and assessment_completed != "Yes":
+        if is_negative(message):
+            student.level = "Basic"
+            student.current_lesson = get_start_lesson_for_level(student.level)
+            reset_lesson_flow(student)
+            student.assessment_completed = "Yes"
+            student.current_stage = 70
+            db.commit()
+
+            lesson = get_current_lesson(student)
+
+            if normalize_language_preference(student.preferred_language) == "English":
+                return (
+                    "No problem. We will start calmly from your current base.\n\n"
+                    f"The first lesson will be: {format_lesson_title(lesson)}.\n\n"
+                    "Which days and times do you prefer for your classes?"
+                )
+
+            return (
+                "Tudo bem. Vamos comecar com calma pelo basico.\n\n"
+                f"A primeira aula sera: {format_lesson_title(lesson)}.\n\n"
+                "Quais dias e horarios voce prefere para suas aulas?"
+            )
+
+        if is_unclear_yes_no(message):
+            return (
+                "Pode me responder com sim ou nao?\n\n"
+                "Voce quer fazer o teste rapidinho de nivel agora?"
+            )
+
+        student.current_stage = 50
+        db.commit()
+
+        questions = get_placement_questions(student.level)
+        return questions[0]
+
+    if 50 <= student.current_stage <= 54 and assessment_completed != "Yes":
+        question_index = student.current_stage - 50
+        questions = get_placement_questions(student.level)
+        answer_message = message
+
+        if not is_valid_placement_answer(student.level, question_index, answer_message):
+            return repeat_placement_question(student.level, question_index)
+
+        add_onboarding_note(
+            student,
+            f"placement_answer_{question_index + 1}",
+            answer_message
+        )
+
+        if question_index < len(questions) - 1:
+            student.current_stage += 1
+            db.commit()
+            return questions[question_index + 1]
+
+        placement_details = evaluate_placement_test_details(student)
+        level = placement_details.get("level", "Basic")
+
+        student.level = level
+        student.current_lesson = get_start_lesson_for_level(level)
+        reset_lesson_flow(student)
+        student.assessment_completed = "Yes"
+        student.current_stage = 70
+        db.commit()
+
+        lesson = get_current_lesson(student)
+        feedback = format_placement_feedback(
+            placement_details,
+            normalize_language_preference(student.preferred_language)
+        )
+        advanced_feedback = level in {"Advanced", "Fluent"}
+
+        if normalize_language_preference(student.preferred_language) == "English" and advanced_feedback:
+            return [
+                (
+                    f"{feedback}\n\n"
+                    f"I will prepare your first lesson: {format_lesson_title(lesson)}."
+                ),
+                "Which days and times do you prefer for your classes?"
+            ]
+
+        return [
+            (
+                f"{feedback}\n\n"
+                f"Vou preparar sua primeira aula: {format_lesson_title(lesson)}."
+            ),
+            "Quais dias e horarios voce prefere para suas aulas?"
+        ]
+
+    if student.current_stage == 70:
         slots = parse_lesson_schedule(message)
 
         if len(slots) < 2:
+            if normalize_language_preference(student.preferred_language) == "English":
+                return (
+                    "Send me two days and times for your classes.\n\n"
+                    "You can write naturally. Example: Monday morning and Thursday night."
+                )
+
             return (
-                "Me mande dois dias e horarios para suas aulas semanais.\n\n"
-                "Exemplo: segunda 9h e quinta 19h"
+                "Me mande dois dias e horarios para suas aulas.\n\n"
+                "Pode escrever do seu jeito. Exemplo: segunda de manha e quinta a noite."
             )
 
         student.lesson_schedule = json.dumps(slots)
@@ -1754,20 +2985,99 @@ Advanced
         student.current_stage = 7
         db.commit()
 
+        if normalize_language_preference(student.preferred_language) == "English":
+            return (
+                "Great! Your weekly classes are scheduled for "
+                f"{format_lesson_schedule(slots)}.\n\n"
+                "In our first lesson, I will guide you step by step.\n\n"
+                "When you want to start, send me: let's start."
+            )
+
         return (
             "Combinado! Suas aulas semanais ficaram em "
             f"{format_lesson_schedule(slots)}.\n\n"
-            "Todos os dias de manha eu tambem vou te mandar a Palavra do Dia "
-            "com um desafio rapido. Uma vez por semana, voce recebe um quiz "
-            "com escrita e fala para medir sua evolucao.\n\n"
-            "Agora me envie uma frase em ingles ou diga o que voce gostaria "
-            "de praticar hoje."
+            "Na nossa primeira aula, eu vou te guiar passo a passo.\n\n"
+            "Quando quiser comecar, me mande: vamos comecar."
         )
+
+    if student.current_stage == 80:
+        if is_affirmative(message):
+            student.preferred_language = "English"
+            student.current_stage = 7
+            db.commit()
+
+            return "Perfect. From now on, I will continue the class mainly in English."
+
+        if is_negative(message):
+            student.preferred_language = "Adaptive"
+            student.current_stage = 7
+            db.commit()
+
+            return "Combinado. Vou continuar misturando portugues e ingles de acordo com seu nivel."
+
+        return "Voce prefere continuar a aula em ingles? Pode responder sim ou nao."
+
+    if student.current_stage == 7:
+        requested_level = detect_requested_level_change(message)
+
+        if requested_level:
+            student.level = requested_level
+            student.current_lesson = get_start_lesson_for_level(requested_level)
+            reset_lesson_flow(student)
+            student.preferred_language = (
+                "Adaptive"
+            )
+            if requested_level in {"Advanced", "Fluent"}:
+                student.current_stage = 80
+            db.commit()
+
+            lesson = get_current_lesson(student)
+
+            if requested_level in {"Advanced", "Fluent"}:
+                return (
+                    f"Combinado. Mudei seu nivel para {requested_level}.\n\n"
+                    f"Vamos seguir por: {format_lesson_title(lesson)}.\n\n"
+                    "Quer continuar essa parte em ingles?"
+                )
+
+            return (
+                f"Combinado. Mudei seu nivel para {requested_level}.\n\n"
+                f"Vamos seguir por: {format_lesson_title(lesson)}.\n\n"
+                "Vou explicar em portugues e colocar o ingles aos poucos, no seu ritmo."
+            )
+
+    if (
+        student.current_stage == 7
+        and can_offer_full_english_mode(student)
+        and normalize_language_preference(student.preferred_language) != "English"
+        and looks_like_english_message(message)
+    ):
+        student.current_stage = 80
+        db.commit()
+
+        return "Percebi que voce escreveu em ingles. Voce quer continuar a aula em ingles?"
+
+    question_for_ai = None
+
+    if student.current_stage == 7 and is_lesson_start_request(message):
+        student.lesson_stage = "intro"
+        question_for_ai = (
+            "[Internal instruction: the student wants to start the lesson now. "
+            "Begin directly with the current lesson topic. Do not ask 'How are you today?'. "
+            "Do not use a generic warm-up. If the topic is grammar, explain the structure clearly "
+            "with formula, usage, important rules, and examples before asking one practice question.]\n\n"
+            f"Student message: {message}"
+        )
+
+    if student.current_stage == 7:
+        update_lesson_engagement(student)
+        db.commit()
 
     return generate_ai_answer(
         student=student,
         question=message,
-        db=db
+        db=db,
+        ai_question=question_for_ai
     )
 
 
@@ -1868,6 +3178,7 @@ Basic
 Basic 2
 Intermediate
 Advanced
+Fluent
 """
             },
             {
@@ -1928,7 +3239,25 @@ async def receive_message(
 
         incoming_message = value["messages"][0]
         phone = incoming_message["from"]
+        message_id = incoming_message.get("id")
         message_type = incoming_message.get("type")
+
+        if message_id:
+            already_processed = db.query(ProcessedWebhookMessageDB).filter(
+                ProcessedWebhookMessageDB.message_id == message_id
+            ).first()
+
+            if already_processed:
+                print("Mensagem Meta ja processada:", message_id)
+                return {"status": "ok"}
+
+            db.add(
+                ProcessedWebhookMessageDB(
+                    message_id=message_id,
+                    phone=phone
+                )
+            )
+            db.commit()
 
         if message_type == "text":
             message = incoming_message.get("text", {}).get("body", "").strip()
@@ -1976,15 +3305,18 @@ async def receive_message(
             db=db
         )
 
-        send_whatsapp_message(
-            phone,
-            reply
-        )
+        replies = reply if isinstance(reply, list) else [reply]
+
+        for reply_message in replies:
+            send_whatsapp_message(
+                phone,
+                reply_message
+            )
 
         send_pronunciation_audio_if_needed(
             phone=phone,
             question=message,
-            answer=reply
+            answer="\n".join(replies)
         )
 
     except Exception as e:
