@@ -56,7 +56,7 @@ def ensure_runtime_columns():
             "current_lesson": "INTEGER DEFAULT 1",
             "onboarding_notes": "TEXT DEFAULT '[]'",
             "interests": "TEXT DEFAULT ''",
-            "lesson_stage": "TEXT DEFAULT 'short_explanation'",
+            "lesson_stage": "TEXT DEFAULT 'context_question'",
             "engagement_minutes": "INTEGER DEFAULT 0",
             "messages_in_current_lesson": "INTEGER DEFAULT 0",
         }
@@ -377,6 +377,11 @@ def is_lesson_start_request(message: str):
             r"\bstart\b",
             r"\blet'?s start\b",
             r"\biniciar\b",
+            r"\bproxima aula\b",
+            r"\bpróxima aula\b",
+            r"\bquero aula\b",
+            r"\bcontinuar aula\b",
+            r"\bstart lesson\b",
         ]
     )
 
@@ -418,6 +423,7 @@ def format_lesson_title(lesson):
 
 
 LESSON_STAGES = [
+    "context_question",
     "short_explanation",
     "more_examples",
     "comprehension",
@@ -430,21 +436,34 @@ LESSON_STAGES = [
     "challenge",
 ]
 
+LESSON_COMPLETED_STAGE = "completed"
+
 
 def get_lesson_stage(student: StudentDB):
-    stage = getattr(student, "lesson_stage", None) or "short_explanation"
+    stage = getattr(student, "lesson_stage", None) or "context_question"
+
+    if stage == LESSON_COMPLETED_STAGE:
+        return LESSON_COMPLETED_STAGE
 
     if stage in {"intro", "vocabulary", "grammar", "examples", "practice", "correction"}:
         return "short_explanation"
 
     if stage not in LESSON_STAGES:
-        return "short_explanation"
+        return "context_question"
 
     return stage
 
 
+def is_lesson_completed(student: StudentDB):
+    return get_lesson_stage(student) == LESSON_COMPLETED_STAGE
+
+
 def advance_lesson_stage(student: StudentDB):
     current_stage = get_lesson_stage(student)
+
+    if current_stage == LESSON_COMPLETED_STAGE:
+        return
+
     current_index = LESSON_STAGES.index(current_stage)
 
     if current_index < len(LESSON_STAGES) - 1:
@@ -453,12 +472,25 @@ def advance_lesson_stage(student: StudentDB):
         student.lesson_stage = "conversation"
 
 
+def mark_lesson_completed(student: StudentDB):
+    if (student.current_lesson or 1) < 70:
+        student.current_lesson = (student.current_lesson or 1) + 1
+
+    student.lesson_stage = LESSON_COMPLETED_STAGE
+    student.messages_in_current_lesson = 0
+
+
 def reset_lesson_flow(student: StudentDB):
-    student.lesson_stage = "short_explanation"
+    student.lesson_stage = "context_question"
     student.messages_in_current_lesson = 0
 
 
 def update_lesson_engagement(student: StudentDB):
+    current_stage = get_lesson_stage(student)
+
+    if current_stage == LESSON_COMPLETED_STAGE:
+        return
+
     student.messages_in_current_lesson = (
         getattr(student, "messages_in_current_lesson", 0) or 0
     ) + 1
@@ -466,17 +498,12 @@ def update_lesson_engagement(student: StudentDB):
         getattr(student, "engagement_minutes", 0) or 0
     ) + 2
 
+    if current_stage == "challenge":
+        mark_lesson_completed(student)
+        return
+
     if (student.messages_in_current_lesson or 0) > 1:
         advance_lesson_stage(student)
-
-    if (
-        get_lesson_stage(student) == "challenge"
-        and (student.messages_in_current_lesson or 0) >= 14
-        and (student.current_lesson or 1) < 70
-    ):
-        student.current_lesson = (student.current_lesson or 1) + 1
-        reset_lesson_flow(student)
-
 
 def get_onboarding_notes(student: StudentDB):
     try:
@@ -1020,6 +1047,215 @@ def send_whatsapp_message(phone: str, text: str):
     return response.json()
 
 
+def send_whatsapp_video(
+    phone: str,
+    caption: str,
+    media_id: str | None = None,
+    link: str | None = None
+):
+    phone_number_id, access_token = get_meta_whatsapp_config()
+    recipient_phone = normalize_whatsapp_phone_for_send(phone)
+
+    url = f"https://graph.facebook.com/v23.0/{phone_number_id}/messages"
+
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "Content-Type": "application/json"
+    }
+
+    video_payload = {
+        "caption": caption
+    }
+
+    if media_id:
+        video_payload["id"] = media_id
+    elif link:
+        video_payload["link"] = link
+    else:
+        raise HTTPException(
+            status_code=500,
+            detail="Video de introducao nao configurado"
+        )
+
+    payload = {
+        "messaging_product": "whatsapp",
+        "to": recipient_phone,
+        "type": "video",
+        "video": video_payload
+    }
+
+    response = requests.post(
+        url,
+        headers=headers,
+        json=payload,
+        timeout=20
+    )
+
+    if response.status_code >= 400:
+        print("Erro ao enviar video pela Meta:", response.text)
+        print("Telefone recebido:", phone)
+        print("Telefone usado no envio:", recipient_phone)
+
+        try:
+            meta_error = response.json().get("error", {})
+            error_message = meta_error.get("message", "Erro desconhecido da Meta")
+            error_code = meta_error.get("code", response.status_code)
+        except ValueError:
+            error_message = response.text
+            error_code = response.status_code
+
+        raise HTTPException(
+            status_code=502,
+            detail=f"Erro ao enviar video pelo WhatsApp Cloud API: {error_code} - {error_message}"
+        )
+
+    return response.json()
+
+
+def send_whatsapp_reply(phone: str, reply):
+    if isinstance(reply, dict) and reply.get("type") == "video":
+        send_whatsapp_video(
+            phone=phone,
+            caption=reply.get("caption", ""),
+            media_id=reply.get("media_id"),
+            link=reply.get("link")
+        )
+        return
+
+    send_whatsapp_message(phone, str(reply))
+
+
+def get_reply_text(reply):
+    if isinstance(reply, dict):
+        return reply.get("caption", "")
+
+    return str(reply)
+
+
+INTRO_VIDEO_PATH = Path(
+    os.getenv(
+        "WINGO_INTRO_VIDEO_PATH",
+        r"C:\Users\Computer\Desktop\WINGO\APRESENTAÇÃO WINGO.mp4"
+    )
+)
+
+WINGO_INTRO_CAPTION = (
+    "Oi!\n\n"
+    "Eu sou o WINGO, seu professor de ingles do What's Up English.\n\n"
+    "Vou te ajudar a aprender ingles de forma simples, pratica e no seu ritmo.\n\n"
+    "LET'S GO..."
+)
+
+INTRO_VIDEO_CACHE_PATH = Path(".wingo_intro_video_media_id")
+
+
+def resolve_intro_video_path():
+    configured_path = os.getenv("WINGO_INTRO_VIDEO_PATH")
+
+    if configured_path:
+        return Path(configured_path)
+
+    configured_dir = os.getenv("WINGO_INTRO_VIDEO_DIR")
+
+    if not configured_dir:
+        return None
+
+    video_dir = Path(configured_dir)
+
+    if not video_dir.exists():
+        return None
+
+    preferred_video = video_dir / "APRESENTA\u00c7\u00c3O WINGO.mp4"
+
+    if preferred_video.exists():
+        return preferred_video
+
+    videos = sorted(video_dir.glob("*.mp4"))
+
+    if not videos:
+        return None
+
+    return videos[0]
+
+
+def get_cached_intro_video_media_id():
+    configured_media_id = os.getenv("WINGO_INTRO_VIDEO_MEDIA_ID")
+
+    if configured_media_id:
+        return configured_media_id
+
+    if INTRO_VIDEO_CACHE_PATH.exists():
+        media_id = INTRO_VIDEO_CACHE_PATH.read_text(encoding="utf-8").strip()
+
+        if media_id:
+            return media_id
+
+    return None
+
+
+def cache_intro_video_media_id(media_id: str):
+    INTRO_VIDEO_CACHE_PATH.write_text(media_id, encoding="utf-8")
+
+
+def build_lesson_intro_video_reply(student: StudentDB):
+    media_id = os.getenv("WINGO_LESSON_INTRO_VIDEO_MEDIA_ID")
+    video_link = os.getenv("WINGO_LESSON_INTRO_VIDEO_LINK")
+
+    if not media_id and not video_link:
+        return None
+
+    lesson = get_current_lesson(student)
+    caption = (
+        f"Vamos comecar nossa aula: {format_lesson_title(lesson)}.\n\n"
+        "Assista esse video rapidinho e depois responda a proxima pergunta."
+    )
+
+    if media_id:
+        return {
+            "type": "video",
+            "caption": caption,
+            "media_id": media_id
+        }
+
+    return {
+        "type": "video",
+        "caption": caption,
+        "link": video_link
+    }
+
+
+def build_intro_video_reply():
+    media_id = get_cached_intro_video_media_id()
+    video_link = os.getenv("WINGO_INTRO_VIDEO_LINK")
+
+    if media_id:
+        return {
+            "type": "video",
+            "caption": WINGO_INTRO_CAPTION,
+            "media_id": media_id
+        }
+
+    if video_link:
+        return {
+            "type": "video",
+            "caption": WINGO_INTRO_CAPTION,
+            "link": video_link
+        }
+
+    intro_video_path = resolve_intro_video_path()
+
+    if intro_video_path and intro_video_path.exists():
+        media_id = upload_whatsapp_media(intro_video_path, "video/mp4")
+        cache_intro_video_media_id(media_id)
+        return {
+            "type": "video",
+            "caption": WINGO_INTRO_CAPTION,
+            "media_id": media_id
+        }
+
+    return WINGO_INTRO_CAPTION
+
+
 def upload_whatsapp_media(file_path: Path, mime_type: str):
     phone_number_id, access_token = get_meta_whatsapp_config()
     url = f"https://graph.facebook.com/v23.0/{phone_number_id}/media"
@@ -1027,6 +1263,8 @@ def upload_whatsapp_media(file_path: Path, mime_type: str):
     headers = {
         "Authorization": f"Bearer {access_token}"
     }
+
+    file_size_mb = file_path.stat().st_size / (1024 * 1024)
 
     with file_path.open("rb") as file:
         response = requests.post(
@@ -1038,10 +1276,22 @@ def upload_whatsapp_media(file_path: Path, mime_type: str):
         )
 
     if response.status_code >= 400:
-        print("Erro ao subir audio na Meta:", response.text)
+        print("Erro ao subir media na Meta:", response.text)
+        print("Arquivo:", file_path)
+        print("Tipo:", mime_type)
+        print("Tamanho MB:", round(file_size_mb, 2))
+
+        try:
+            meta_error = response.json().get("error", {})
+            error_message = meta_error.get("message", "Erro desconhecido da Meta")
+            error_code = meta_error.get("code", response.status_code)
+        except ValueError:
+            error_message = response.text
+            error_code = response.status_code
+
         raise HTTPException(
             status_code=502,
-            detail="Erro ao subir audio para o WhatsApp Cloud API"
+            detail=f"Erro ao subir media para o WhatsApp Cloud API: {error_code} - {error_message}"
         )
 
     return response.json()["id"]
@@ -1219,6 +1469,66 @@ def send_pronunciation_audio_if_needed(phone: str, question: str, answer: str):
             audio_path.unlink(missing_ok=True)
         except OSError:
             pass
+
+
+def extract_english_phrases_for_audio(answer: str, limit: int = 3):
+    quoted_phrases = re.findall(r'"([^"]+)"', answer or "")
+    candidates = []
+
+    for phrase in quoted_phrases:
+        if re.search(r"[A-Za-z]", phrase) and not re.search(r"[À-ÿ]", phrase):
+            candidates.append(phrase.strip())
+
+    if not candidates:
+        for line in (answer or "").splitlines():
+            cleaned = line.strip(" -•0123456789.()")
+
+            if not cleaned:
+                continue
+
+            if re.search(
+                r"\b(am|is|are|hello|hi|good morning|my name|what's your name)\b",
+                cleaned.lower()
+            ):
+                candidates.append(cleaned)
+
+    unique_phrases = []
+
+    for phrase in candidates:
+        if phrase and phrase not in unique_phrases:
+            unique_phrases.append(phrase)
+
+    return unique_phrases[:limit]
+
+
+def ensure_teacher_audio_prompt(student: StudentDB, answer: str):
+    if "repeat after me:" in (answer or "").lower():
+        return answer
+
+    if get_lesson_stage(student) not in {
+        "more_examples",
+        "structure",
+        "production",
+        "conversation",
+    }:
+        return answer
+
+    phrases = extract_english_phrases_for_audio(answer)
+
+    if not phrases:
+        lesson = get_current_lesson(student)
+
+        if lesson["title"] == "Greetings":
+            phrases = ["Hi.", "Hello.", "My name is Wingo."]
+
+    if not phrases:
+        return answer
+
+    return (
+        f"{answer}\n\n"
+        "Repeat after me:\n"
+        + "\n".join(phrases)
+    )
 
 
 def get_whatsapp_media_url(media_id: str):
@@ -1892,6 +2202,7 @@ def generate_ai_answer(
     goal = getattr(student, "learning_goal", None) or "Conversation"
     interests = getattr(student, "interests", None) or "not informed yet"
     lesson_stage = get_lesson_stage(student)
+    lesson_mode = "bot_after_lesson" if lesson_stage == LESSON_COMPLETED_STAGE else "guided_lesson"
     engagement_minutes = getattr(student, "engagement_minutes", 0) or 0
     lesson_messages = getattr(student, "messages_in_current_lesson", 0) or 0
     learning_summary = get_recent_learning_summary(student.id, db)
@@ -1917,6 +2228,7 @@ Student profile:
 - Learning goal: {goal}
 - Interests: {interests}
 - Current lesson stage: {lesson_stage}
+- Current mode: {lesson_mode}
 - Estimated engagement in lessons: {engagement_minutes} minutes
 - Messages in current lesson: {lesson_messages}
 
@@ -1949,21 +2261,31 @@ Lesson guidance:
 - Do not advance the course just because the student sent one answer; reinforce, correct, and practice first.
 - If the student asks "what should I study?" or "start the class", begin the current lesson.
 
+After-lesson BOT mode:
+- If Current mode is bot_after_lesson, the guided class has already finished.
+- In bot_after_lesson mode, do not continue the next structured lesson automatically.
+- In bot_after_lesson mode, answer the student's personal English questions naturally, like a helpful tutor.
+- If the student asks a curiosity such as how to order water, how to say a sentence, vocabulary, pronunciation, or travel phrase, answer that question and keep the conversation on that topic.
+- If the student answers "sim", "yes", "ok", "ta bom", or similar in bot_after_lesson mode, treat it as a reply to your last assistant question, not as permission to start the next lesson.
+- In bot_after_lesson mode, only start the next structured lesson if the student clearly asks: "vamos comecar", "proxima aula", "quero aula", "start lesson", or similar.
+- In bot_after_lesson mode, you may mention that the next guided lesson is ready, but do not teach it unless the student asks or it is a scheduled class time.
+
 Micro-lesson flow:
 - Each lesson is a micro-lesson: 1 concept, 5 to 10 minutes, 10 to 15 WhatsApp messages.
 - Do not send a long 60-minute class. The product experience is: learn one small thing now, get feedback, continue.
 - Do not send all steps at once. Send only the current step.
 - Do not show labels like "Etapa 1" unless the student asks for a summary.
+- Current stage context_question: ask one simple question that naturally creates the need for the lesson. Use a question that belongs to the current lesson topic only.
 - Current stage short_explanation: explain the concept briefly and give 1 bilingual example.
-- Current stage more_examples: give 3 bilingual examples, English first and Portuguese meaning right after.
+- Current stage more_examples: give 3 bilingual examples, English first and Portuguese meaning right after. Include "Repeat after me:" with 1 to 3 short English phrases.
 - Current stage comprehension: ask what one example means. Example: What does "She is reading" mean?
 - Current stage structure: show the formula clearly. Example: Subject + To Be + Verb + ING.
 - Current stage exercise_1: ask a fill-in-the-blank exercise. Example: I ___ studying.
 - Current stage exercise_2: ask a second fill-in-the-blank exercise. Example: She ___ reading.
-- Current stage production: ask the student to translate or produce one full sentence.
+- Current stage production: ask the student to translate or produce one full sentence. After the student writes it, ask for one short audio under 20 seconds.
 - Current stage conversation: ask a real conversation question using the topic. Example: What are you doing right now?
-- Current stage expansion: ask for 3 personalized sentences about the student's life, interests, or surroundings.
-- Current stage challenge: finish with a tiny mission and summarize what they learned.
+- Current stage expansion: ask for only 2 personalized sentences about the student's life, interests, or surroundings.
+- Current stage challenge: finish with one tiny mission, not another long exercise, and summarize what they learned.
 
 Present Continuous example flow:
 - Short explanation: We use Present Continuous for actions happening now. Example: I am studying English. Eu estou estudando ingles.
@@ -1972,6 +2294,26 @@ Present Continuous example flow:
 - Explain that -ING is added to the main verb: study -> studying, read -> reading, play -> playing.
 - Explain am/is/are: I am, he/she/it is, you/we/they are.
 - Mention simple spelling only when helpful: make -> making, run -> running.
+- If the student answered the context question incorrectly, do not say "Muito bem" or "Great job". Say "Quase isso", show the corrected version, and then explain.
+
+Greetings lesson requirements:
+- Stay only on greetings and simple introductions.
+- Do not mix in unrelated grammar like Present Continuous, routine, colors, or long personal sentences.
+- Context question: ask "Como voce diria 'Ola' em ingles?"
+- Accept "hello" and "hi" as correct answers.
+- If the student writes "hello", do not say "Quase isso". Say it is correct and explain the difference between "Hi" and "Hello" simply.
+- Examples should stay close to the topic:
+  - Hi.
+  - Hello.
+  - Good morning.
+  - What's your name?
+  - My name is Ronan.
+- Comprehension should ask meaning of one greeting or one introduction sentence.
+- Structure should focus only on "My name is..." and "What's your name?"
+- Exercises should be simple:
+  - Complete: My name ___ Ronan.
+  - Complete: ___ your name?
+- Production should ask the student to introduce themselves with "My name is..."
 
 Standard Wingo lesson model:
 - The Micro-lesson flow above is mandatory and overrides this generic model.
@@ -1986,7 +2328,7 @@ Standard Wingo lesson model:
 - 4. Examples: give 3 realistic examples.
 - 5. Practice: ask questions and make the student answer using the lesson topic. Prefer text answers by default.
 - 6. Correction: correct mistakes gently and show the improved sentence.
-- 7. Challenge: finish with a small mission, such as "Tell me 5 things you did yesterday."
+- 7. Challenge: finish with one tiny mission, such as "Write one sentence about now."
 - In WhatsApp chat, usually send only one section or one exercise per message.
 - After each student answer, decide whether to correct, give another practice item, or move to the next section.
 - For grammar topics such as Present Continuous, do not be too shallow. Explain the structure, for example: subject + verb to be + verb-ing; mention that -ing is added to the main verb; include spelling notes when useful, such as make -> making and run -> running.
@@ -2005,18 +2347,20 @@ Personalization:
 Engagement:
 - Make the student spend time practicing by asking one small answer at a time.
 - Prefer short cycles: explain, example, ask, correct, ask again.
-- After a few good answers, briefly show progress such as "Voce ja praticou 3 frases hoje" or "Boa, +XP de pratica".
+- After a few good answers, briefly show qualitative progress such as "Boa, voce esta praticando bem esse padrao." Do not mention message counts.
 - Do not invent exact scores unless the system gives them. You may mention progress qualitatively.
 - If the student seems tired or asks to stop, summarize what they learned and end kindly.
 
 Audio control:
-- Prefer text practice by default.
+- Every micro-lesson should include at least one teacher audio and at least one student audio request.
+- Prefer text practice by default, but do not skip audio completely.
 - Do not ask for audio in every exercise.
-- Ask for at most one short voice note per lesson unless the student explicitly asks for more speaking practice.
+- Suggest up to two short audio moments per lesson when useful: one for repeating model sentences and one for the student's own answer.
 - When asking for audio, request one short voice note under 20 seconds.
 - Use audio mainly for pronunciation, speaking confidence, or final speaking checks.
 - If you want the system to send a teacher audio, write exactly "Repeat after me:" followed by 1 to 3 short English sentences.
-- Use "Repeat after me:" at most once per lesson, preferably after structure, conversation, or challenge.
+- When teaching a new English phrase or model sentence, include a "Repeat after me:" block so the backend sends teacher audio.
+- Use "Repeat after me:" up to two times per lesson, preferably after structure and near conversation or challenge.
 - After sending a repeat prompt, ask the student to answer with a short audio only if pronunciation practice is useful.
 - If the student sends many voice notes in sequence, correct briefly and guide them back to text practice.
 - Do not ask for a voice note in the first lesson message.
@@ -2073,15 +2417,7 @@ Brand voice:
     )
 
     answer = response.choices[0].message.content
-
-    if (
-        getattr(student, "current_stage", None) == 7
-        and (getattr(student, "messages_in_current_lesson", 0) or 0) in {4, 8, 12}
-    ):
-        answer = (
-            f"{answer}\n\n"
-            f"Progresso de hoje: voce ja trocou {student.messages_in_current_lesson} mensagens nesta aula."
-        )
+    answer = ensure_teacher_audio_prompt(student, answer)
 
     conversation = ConversationDB(
         student_id=student.id,
@@ -2295,7 +2631,7 @@ def send_scheduled_lessons(db: Session, now: datetime):
 
             try:
                 if not getattr(student, "lesson_stage", None):
-                    student.lesson_stage = "short_explanation"
+                    student.lesson_stage = "context_question"
                 update_lesson_engagement(student)
                 message = generate_weekly_lesson(student, db)
                 send_whatsapp_message(student.phone, message)
@@ -2375,7 +2711,7 @@ def register(student: Student, db: Session = Depends(get_db)):
     learning_goal=student.learning_goal,
     interests="",
     current_lesson=1,
-    lesson_stage="short_explanation",
+    lesson_stage="context_question",
     engagement_minutes=0,
     messages_in_current_lesson=0,
     current_stage=0,
@@ -2751,7 +3087,7 @@ def get_or_create_whatsapp_student(phone: str, db: Session):
         learning_goal="Conversation",
         interests="",
         current_lesson=1,
-        lesson_stage="short_explanation",
+        lesson_stage="context_question",
         engagement_minutes=0,
         messages_in_current_lesson=0,
         current_stage=0,
@@ -2773,13 +3109,10 @@ def process_whatsapp_message(phone: str, message: str, db: Session):
         student.last_activity = datetime.utcnow()
         db.commit()
 
-        return (
-            "Ola!\n\n"
-            "Eu sou o *WINGO*, seu professor de ingles no WhatsUp English.\n\n"
-            "Vou te ajudar a aprender ingles de forma simples, pratica e no seu ritmo.\n\n"
-            "Let's Bora!\n\n"
+        return [
+            build_intro_video_reply(),
             "Primeiro, qual e o seu nome?"
-        )
+        ]
 
     student.last_activity = datetime.utcnow()
     db.commit()
@@ -2845,14 +3178,19 @@ def process_whatsapp_message(phone: str, message: str, db: Session):
         add_onboarding_note(student, "studied_before", message)
         if is_negative(message):
             student.level = "Basic"
-            student.current_stage = 6
+            student.current_lesson = get_start_lesson_for_level(student.level)
+            reset_lesson_flow(student)
+            student.assessment_completed = "Yes"
+            student.current_stage = 70
             db.commit()
+
+            lesson = get_current_lesson(student)
 
             return (
                 "Sem problema. Vamos comecar bem do inicio e no seu ritmo.\n\n"
                 "Entao seu nivel de ingles provavelmente e: Basic.\n\n"
-                "Voce quer fazer um teste rapidinho de nivel agora? "
-                "Sao 5 perguntas curtas, uma por vez."
+                f"A primeira aula sera: {format_lesson_title(lesson)}.\n\n"
+                "Quais dias e horarios voce prefere para suas aulas?"
             )
 
         if is_unclear_study_experience(message):
@@ -3088,6 +3426,43 @@ def process_whatsapp_message(phone: str, message: str, db: Session):
                 "Vou explicar em portugues e colocar o ingles aos poucos, no seu ritmo."
             )
 
+    if student.current_stage == 7 and is_lesson_completed(student):
+        if is_lesson_start_request(message):
+            reset_lesson_flow(student)
+            db.commit()
+
+            lesson = get_current_lesson(student)
+            lesson_video = build_lesson_intro_video_reply(student)
+
+            replies = [
+                "Combinado! Vamos para a proxima aula.",
+            ]
+
+            if lesson_video:
+                replies.append(lesson_video)
+
+            if lesson["title"] == "Greetings":
+                replies.append("Como voce diria 'Ola' em ingles?")
+            else:
+                replies.append(
+                    f"Hoje vamos trabalhar: {format_lesson_title(lesson)}.\n\n"
+                    "Primeiro, me diga uma coisa simples sobre esse tema com suas palavras."
+                )
+
+            return replies
+
+        return generate_ai_answer(
+            student=student,
+            question=message,
+            db=db,
+            ai_question=(
+                "[Internal instruction: the guided lesson is finished. "
+                "Answer the student's current question in flexible tutor/BOT mode. "
+                "Do not start the next structured lesson. If the student only says yes, continue the last free-help topic.]\n\n"
+                f"Student message: {message}"
+            )
+        )
+
     if (
         student.current_stage == 7
         and can_offer_full_english_mode(student)
@@ -3099,23 +3474,52 @@ def process_whatsapp_message(phone: str, message: str, db: Session):
 
         return "Percebi que voce escreveu em ingles. Voce quer continuar a aula em ingles?"
 
-    question_for_ai = None
-
     if student.current_stage == 7 and is_lesson_start_request(message):
-        student.lesson_stage = "short_explanation"
-        question_for_ai = (
-            "[Internal instruction: the student wants to start the lesson now. "
-            "Begin directly with the short_explanation stage of the current lesson. "
-            "Do not ask 'How are you today?'. Do not use a generic warm-up. "
-            "Teach one small concept, give one bilingual example, and ask one simple question. "
-            "If the topic is Present Continuous, say it is for actions happening now and show one example like "
-            "'I am studying English. Eu estou estudando ingles.']\n\n"
-            f"Student message: {message}"
-        )
+        student.lesson_stage = "context_question"
+        student.messages_in_current_lesson = 0
+        db.commit()
+
+        lesson = get_current_lesson(student)
+        lesson_video = build_lesson_intro_video_reply(student)
+
+        if lesson["title"] == "Greetings":
+            replies = [
+                "Otimo! Vamos comecar!",
+                "Como voce diria 'Ola' em ingles?"
+            ]
+
+            if lesson_video:
+                replies.insert(1, lesson_video)
+
+            return replies
+
+        replies = [
+            "Otimo! Vamos comecar!",
+            "O que voce esta fazendo agora?"
+        ]
+
+        if lesson_video:
+            replies.insert(1, lesson_video)
+
+        return replies
+
+    question_for_ai = None
 
     if student.current_stage == 7:
         update_lesson_engagement(student)
         db.commit()
+
+        if get_lesson_stage(student) == "short_explanation":
+            lesson = get_current_lesson(student)
+            question_for_ai = (
+                "[Internal instruction: use the student's last answer as the bridge into the lesson. "
+                f"The current lesson topic is {lesson['title']}. Do not teach another topic. "
+                "Explain only the current concept using that answer when possible. "
+                "If the topic is Greetings, stay only with Hi, Hello, Good morning, What's your name?, and My name is. "
+                "If the student answered correctly, say it is correct without saying 'Quase isso'. "
+                "If the student answered incorrectly, say 'Quase isso' and correct gently.]\n\n"
+                f"Student message: {message}"
+            )
 
     return generate_ai_answer(
         student=student,
@@ -3352,15 +3756,17 @@ async def receive_message(
         replies = reply if isinstance(reply, list) else [reply]
 
         for reply_message in replies:
-            send_whatsapp_message(
+            send_whatsapp_reply(
                 phone,
                 reply_message
             )
 
+        reply_text = "\n".join(get_reply_text(item) for item in replies)
+
         send_pronunciation_audio_if_needed(
             phone=phone,
             question=message,
-            answer="\n".join(replies)
+            answer=reply_text
         )
 
     except Exception as e:

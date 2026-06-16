@@ -81,7 +81,7 @@ class StudentDB(Base):
 
     lesson_stage = Column(
         String,
-        default="short_explanation"
+        default="context_question"
     )
 
     engagement_minutes = Column(

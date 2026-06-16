@@ -3,3 +3,4 @@ __pycache__/
 *.pyc
 whatsup.db
 .env
+.wingo_intro_video_media_id
