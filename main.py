@@ -48,6 +48,9 @@ Base.metadata.create_all(bind=engine)
 
 
 def ensure_runtime_columns():
+    if engine.dialect.name != "sqlite":
+        return
+
     with engine.connect() as connection:
         columns = connection.execute(text("PRAGMA table_info(students)")).fetchall()
         column_names = {column[1] for column in columns}
