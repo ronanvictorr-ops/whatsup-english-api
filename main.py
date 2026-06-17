@@ -3249,8 +3249,62 @@ def get_or_create_whatsapp_student(phone: str, db: Session):
     return student
 
 
+def recover_student_flow(student: StudentDB, db: Session):
+    if not (student.name or "").strip():
+        student.current_stage = 2
+        db.commit()
+        return (
+            "Tive um problema aqui. Vou retomar com você do ponto certo.\n\n"
+            "Primeiro, qual e o seu nome?"
+        )
+
+    if not (student.learning_goal or "").strip() or student.learning_goal == "Conversation":
+        student.current_stage = 3
+        db.commit()
+        return (
+            "Tive um problema aqui. Vou retomar com você do ponto certo.\n\n"
+            "Me conta com suas palavras: por que voce quer aprender ingles?"
+        )
+
+    if not (student.interests or "").strip():
+        student.current_stage = 35
+        db.commit()
+        return (
+            "Tive um problema aqui. Vou retomar com você do ponto certo.\n\n"
+            "Me conta do que voce gosta para eu personalizar suas aulas."
+        )
+
+    if getattr(student, "assessment_completed", "No") != "Yes":
+        student.current_stage = 4
+        db.commit()
+        return (
+            "Tive um problema aqui. Vou retomar com você do ponto certo.\n\n"
+            "Voce ja estudou ingles antes, mesmo que por pouco tempo?"
+        )
+
+    if getattr(student, "schedule_completed", "No") != "Yes":
+        student.current_stage = 70
+        db.commit()
+        return (
+            "Tive um problema aqui. Vou retomar com você do ponto certo.\n\n"
+            "Quais dias e horarios voce prefere para suas aulas?"
+        )
+
+    student.current_stage = 7
+    db.commit()
+    return (
+        "Tive um problema aqui. Vou retomar com você do ponto certo.\n\n"
+        "Quando quiser continuar, me mande: vamos comecar."
+    )
+
+
 def process_whatsapp_message(phone: str, message: str, db: Session):
     student = get_or_create_whatsapp_student(phone, db)
+
+    if student.current_stage == 999:
+        student.last_activity = datetime.utcnow()
+        db.commit()
+        return recover_student_flow(student, db)
 
     if student.current_stage == 0:
         student.current_stage = 2
@@ -3980,5 +4034,20 @@ async def receive_message(
 
     except Exception as e:
         print("Erro ao processar mensagem:", e)
+        try:
+            db.rollback()
+            if "phone" in locals():
+                student = db.query(StudentDB).filter(
+                    StudentDB.phone == phone
+                ).first()
+
+                if student:
+                    student.current_stage = 999
+                    student.last_activity = datetime.utcnow()
+                    db.commit()
+                    print("Aluno marcado para recuperacao:", phone)
+        except Exception as recovery_error:
+            db.rollback()
+            print("Erro ao marcar aluno para recuperacao:", recovery_error)
 
     return {"status": "ok"}
