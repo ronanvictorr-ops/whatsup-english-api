@@ -2,6 +2,12 @@
 
 API desenvolvida com FastAPI para o projeto WhatsUp English.
 
+O posicionamento comercial, planos beta e roadmap de produto estao em:
+
+```text
+PRODUCT.md
+```
+
 ## Tecnologias utilizadas
 
 * Python

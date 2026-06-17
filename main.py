@@ -136,6 +136,74 @@ ACADEMIC_AUTOMATIONS_ENABLED = os.getenv("ACADEMIC_AUTOMATIONS_ENABLED", "true")
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="login")
 
 
+PRODUCT_PLANS = [
+    {
+        "id": "individual_beta",
+        "name": "Aluno Individual Beta",
+        "price_brl": 29.90,
+        "billing": "monthly",
+        "audience": "Aluno final",
+        "limits": {
+            "students": 1,
+            "guided_lessons_per_day": 1,
+        },
+        "features": [
+            "1 aula guiada por dia",
+            "Aulas de 5 a 10 minutos",
+            "Pratica por texto",
+            "Pratica por audio",
+            "Correcao imediata",
+            "Memoria pedagogica",
+            "Teste de nivel inicial",
+            "Relatorio semanal",
+            "Suporte em horario comercial",
+        ],
+        "beta_offer": "7 dias gratis ou R$19,90 por mes durante 3 meses para fundadores",
+    },
+    {
+        "id": "teacher_partner_beta",
+        "name": "Professor Parceiro Beta",
+        "price_brl": 99.00,
+        "billing": "monthly",
+        "audience": "Professor independente",
+        "limits": {
+            "students": 10,
+            "guided_lessons_per_day": 1,
+        },
+        "features": [
+            "Ate 10 alunos",
+            "Painel do professor",
+            "Progresso por aluno",
+            "Relatorio por aluno",
+            "Memoria pedagogica por aluno",
+            "Comandos de controle do aluno",
+            "Acompanhamento humano opcional",
+        ],
+        "beta_offer": "Plano para professores validarem o WINGO com uma turma pequena",
+    },
+    {
+        "id": "school_beta",
+        "name": "Escola Beta",
+        "price_range_brl": "299.00-599.00",
+        "billing": "monthly",
+        "audience": "Escolas pequenas e cursos livres",
+        "limits": {
+            "students": "30-100",
+            "guided_lessons_per_day": 1,
+        },
+        "features": [
+            "Painel da escola",
+            "Relatorios semanais",
+            "Acompanhamento por turma",
+            "Indicadores de engajamento",
+            "Suporte prioritario",
+            "Personalizacao com nome da escola",
+        ],
+        "beta_offer": "Recomendado somente depois da validacao com alunos e professores",
+    },
+]
+
+
 CURRICULUM = [
     {"number": 1, "level": "Basic 1 (A1)", "title": "Greetings", "focus": "Hi, Hello, Good morning; What's your name?; My name is..."},
     {"number": 2, "level": "Basic 1 (A1)", "title": "Countries & Nationalities", "focus": "Where are you from?; I am from Brazil"},
@@ -3153,6 +3221,19 @@ async def start_academic_automations():
 # =========================
 # STUDENTS
 # =========================
+
+@app.get("/plans")
+def get_product_plans():
+    return {
+        "product": "WINGO Daily",
+        "positioning": "10 minutos de ingles por dia no WhatsApp.",
+        "value_proposition": (
+            "Aulas curtas, personalizadas e diarias com correcao imediata, "
+            "pratica por audio, memoria pedagogica e relatorio semanal."
+        ),
+        "plans": PRODUCT_PLANS,
+    }
+
 
 @app.post("/register")
 def register(student: Student, db: Session = Depends(get_db)):
