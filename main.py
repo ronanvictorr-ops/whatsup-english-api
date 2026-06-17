@@ -962,6 +962,53 @@ If there are no clear English mistakes because the student wrote very little, ex
     return data
 
 
+def evaluate_placement_test_details_fallback(student: StudentDB):
+    notes = get_onboarding_notes(student)
+    answers = [
+        str(note.get("value", ""))
+        for note in notes
+        if str(note.get("key", "")).startswith("placement_answer_")
+    ]
+    combined = normalize_intent_text(" ".join(answers))
+    word_count = count_answer_words(combined)
+
+    if (
+        not answers
+        or "nao sei" in combined
+        or "nao tenho" in combined
+        or "nenhum conhecimento" in combined
+        or "nada" == combined.strip()
+    ):
+        return {
+            "level": "Basic",
+            "reason": "Voce informou que nao tem conhecimento ou respondeu com pouca evidencia em ingles.",
+            "strengths": ["Voce foi sincero sobre seu ponto de partida."],
+            "mistakes": []
+        }
+
+    english_signals = len(re.findall(
+        r"\b(i|am|my|name|from|like|want|study|work|travel|hello|hi|good)\b",
+        combined
+    ))
+
+    if english_signals >= 8 and word_count >= 35:
+        level = "Intermediate"
+        reason = "Voce conseguiu usar varias palavras e ideias em ingles, mas ainda vamos confirmar com aulas guiadas."
+    elif english_signals >= 3 and word_count >= 12:
+        level = "Basic 2"
+        reason = "Voce mostrou alguma base de vocabulario e frases simples em ingles."
+    else:
+        level = "Basic"
+        reason = "Suas respostas mostram que e melhor comecar pelo basico e construir seguranca."
+
+    return {
+        "level": level,
+        "reason": reason,
+        "strengths": ["Voce conseguiu responder ao teste.", "Agora temos um ponto inicial para as aulas."],
+        "mistakes": []
+    }
+
+
 def format_placement_feedback(details: dict, language: str):
     level = details.get("level", "Basic")
     reason = details.get("reason") or "I based this on your answers in the test."
@@ -3451,7 +3498,12 @@ def process_whatsapp_message(phone: str, message: str, db: Session):
             db.commit()
             return questions[question_index + 1]
 
-        placement_details = evaluate_placement_test_details(student)
+        try:
+            placement_details = evaluate_placement_test_details(student)
+        except Exception as error:
+            print("Erro ao avaliar teste de nivel. Usando fallback:", error)
+            placement_details = evaluate_placement_test_details_fallback(student)
+
         level = placement_details.get("level", "Basic")
 
         student.level = level
@@ -3912,6 +3964,7 @@ async def receive_message(
         replies = reply if isinstance(reply, list) else [reply]
 
         for reply_message in replies:
+            print("RESPOSTA:", get_reply_text(reply_message))
             send_whatsapp_reply(
                 phone,
                 reply_message
