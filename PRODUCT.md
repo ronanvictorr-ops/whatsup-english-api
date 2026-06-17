@@ -170,10 +170,10 @@ O WINGO deve funcionar como curso estruturado, nao como chatbot livre.
 
 Camadas pedagogicas:
 
-- Curriculo progressivo com 70 aulas.
-- Objetivo por aula.
-- Declaracao "eu consigo..." por aula.
-- Exercicios controlados por nivel.
+- Curriculo progressivo com 70 aulas estruturadas.
+- Objetivo especifico por aula.
+- Declaracao "eu consigo..." especifica por aula.
+- Exercicios controlados especificos por aula e adaptados por nivel.
 - Pratica de producao propria.
 - Momento de audio para pronuncia.
 - Rubrica de correcao.
