@@ -390,6 +390,25 @@ def is_lesson_start_request(message: str):
     )
 
 
+def is_level_retest_request(message: str):
+    text = normalize_intent_text(message)
+    return any(
+        re.search(pattern, text)
+        for pattern in [
+            r"\brefazer.*teste\b",
+            r"\bfazer.*teste.*nivel\b",
+            r"\bnovo.*teste.*nivel\b",
+            r"\bteste.*nivel\b",
+            r"\bavaliar.*nivel\b",
+            r"\breavaliar\b",
+            r"\breavaliacao\b",
+            r"\bver.*se.*melhorei\b",
+            r"\bsaber.*se.*melhorei\b",
+            r"\bmeu nivel melhorou\b",
+        ]
+    )
+
+
 def get_current_lesson(student: StudentDB):
     lesson_number = getattr(student, "current_lesson", None)
 
@@ -3319,6 +3338,23 @@ def process_whatsapp_message(phone: str, message: str, db: Session):
     student.last_activity = datetime.utcnow()
     db.commit()
 
+    if (
+        student.current_stage not in {0, 2, 3, 35, 4, 5, 6, 50, 51, 52, 53, 54, 70, 80, 81, 999}
+        and is_level_retest_request(message)
+    ):
+        student.assessment_completed = "No"
+        student.current_stage = 50
+        reset_lesson_flow(student)
+        add_onboarding_note(student, "level_retest_requested", message)
+        db.commit()
+
+        questions = get_placement_questions(student.level)
+        return (
+            "Claro. Quando voce se sentir preparado, pode refazer o teste de nivel para ver sua evolucao.\n\n"
+            "Vamos fazer agora: sao 5 perguntas curtas, uma por vez.\n\n"
+            f"{questions[0]}"
+        )
+
     if student.current_stage == 2:
         if not is_probable_person_name(message):
             return (
@@ -3578,7 +3614,8 @@ def process_whatsapp_message(phone: str, message: str, db: Session):
             return [
                 (
                     f"{feedback}\n\n"
-                    f"I will prepare your first lesson: {format_lesson_title(lesson)}."
+                    f"I will prepare your first lesson: {format_lesson_title(lesson)}.\n\n"
+                    "When you feel ready in the future, you can ask me to retake the level test."
                 ),
                 "Which days and times do you prefer for your classes?"
             ]
@@ -3586,7 +3623,8 @@ def process_whatsapp_message(phone: str, message: str, db: Session):
         return [
             (
                 f"{feedback}\n\n"
-                f"Vou preparar sua primeira aula: {format_lesson_title(lesson)}."
+                f"Vou preparar sua primeira aula: {format_lesson_title(lesson)}.\n\n"
+                "Quando se sentir preparado no futuro, voce pode me pedir para refazer o teste de nivel."
             ),
             "Quais dias e horarios voce prefere para suas aulas?"
         ]
@@ -3616,6 +3654,7 @@ def process_whatsapp_message(phone: str, message: str, db: Session):
                 "Great! Your weekly classes are scheduled for "
                 f"{format_lesson_schedule(slots)}.\n\n"
                 "In our first lesson, I will guide you step by step.\n\n"
+                "When you feel you have improved, you can ask: retake level test.\n\n"
                 "When you want to start, send me: let's start."
             )
 
@@ -3623,6 +3662,7 @@ def process_whatsapp_message(phone: str, message: str, db: Session):
             "Combinado! Suas aulas semanais ficaram em "
             f"{format_lesson_schedule(slots)}.\n\n"
             "Na nossa primeira aula, eu vou te guiar passo a passo.\n\n"
+            "Quando sentir que evoluiu, voce pode pedir: refazer teste de nivel.\n\n"
             "Quando quiser comecar, me mande: vamos comecar."
         )
 
