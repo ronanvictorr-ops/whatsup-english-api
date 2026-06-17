@@ -128,6 +128,8 @@ class StudentDB(Base):
 
     last_weekly_quiz_week = Column(String)
 
+    last_lesson_date = Column(String)
+
     last_lesson_keys = Column(
         Text,
         default="[]"

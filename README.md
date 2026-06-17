@@ -68,6 +68,47 @@ http://127.0.0.1:8000/docs
 
 ---
 
+## Deploy no Render
+
+Use o projeto como Web Service no Render.
+
+Build command:
+
+```bash
+pip install -r requirements.txt
+```
+
+Start command:
+
+```bash
+uvicorn main:app --host 0.0.0.0 --port $PORT
+```
+
+Variaveis de ambiente necessarias:
+
+```env
+DATABASE_URL=
+SECRET_KEY=
+OPENAI_API_KEY=
+META_PHONE_NUMBER_ID=
+META_ACCESS_TOKEN=
+META_VERIFY_TOKEN=
+WINGO_INTRO_VIDEO_MEDIA_ID=
+LOCAL_TIMEZONE=America/Sao_Paulo
+LOCAL_UTC_OFFSET_HOURS=-3
+ACADEMIC_AUTOMATIONS_ENABLED=true
+```
+
+Depois do deploy, configure o webhook da Meta com:
+
+```text
+https://SEU-SERVICO.onrender.com/meta-webhook
+```
+
+O campo `messages` precisa estar inscrito no webhook do WhatsApp.
+
+---
+
 # Funcionalidades
 
 ## Cadastro de Alunos

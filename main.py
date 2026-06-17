@@ -59,6 +59,7 @@ def ensure_runtime_columns():
             "lesson_stage": "TEXT DEFAULT 'context_question'",
             "engagement_minutes": "INTEGER DEFAULT 0",
             "messages_in_current_lesson": "INTEGER DEFAULT 0",
+            "last_lesson_date": "TEXT",
         }
 
         for column_name, definition in runtime_columns.items():
@@ -700,6 +701,89 @@ def is_unclear_study_experience(message: str):
     return not is_study_experience_affirmative(message) and not is_negative(message)
 
 
+def wants_portuguese_mode(message: str):
+    text = normalize_intent_text(message)
+    return any(
+        re.search(pattern, text)
+        for pattern in [
+            r"\bfale.*portugues\b",
+            r"\bfalar.*portugues\b",
+            r"\bvolta.*portugues\b",
+            r"\bvoltar.*portugues\b",
+            r"\bsomente.*portugues\b",
+            r"\bso.*portugues\b",
+            r"\bapenas.*portugues\b",
+            r"\bnao.*ingles\b",
+            r"\bem portugues\b",
+        ]
+    )
+
+
+def wants_english_mode(message: str):
+    text = normalize_intent_text(message)
+    return any(
+        re.search(pattern, text)
+        for pattern in [
+            r"\bfale.*ingles\b",
+            r"\bfalar.*ingles\b",
+            r"\bcontinue.*ingles\b",
+            r"\bsomente.*ingles\b",
+            r"\bso.*ingles\b",
+            r"\bapenas.*ingles\b",
+            r"\bin english\b",
+        ]
+    )
+
+
+def wants_to_stop_assessment(message: str):
+    text = normalize_intent_text(message)
+    return any(
+        re.search(pattern, text)
+        for pattern in [
+            r"\bpare.*teste\b",
+            r"\bparar.*teste\b",
+            r"\bcancelar.*teste\b",
+            r"\bcancela.*teste\b",
+            r"\bnao quero.*teste\b",
+            r"\bsem teste\b",
+            r"\bchega.*teste\b",
+            r"\bstop.*test\b",
+            r"\bcancel.*test\b",
+        ]
+    )
+
+
+def is_off_topic_during_assessment(message: str):
+    text = normalize_intent_text(message)
+
+    if wants_portuguese_mode(text) or wants_english_mode(text) or wants_to_stop_assessment(text):
+        return True
+
+    if text in {
+        "sim", "nao", "ok", "okay", "ta", "ta bom", "tá bom", "beleza",
+        "entendi", "certo", "volta", "pare", "para", "parar", "stop"
+    }:
+        return True
+
+    return any(
+        re.search(pattern, text)
+        for pattern in [
+            r"\bme ajuda\b",
+            r"\bme ajude\b",
+            r"\bcomo fala\b",
+            r"\bcomo digo\b",
+            r"\bcomo dizer\b",
+            r"\bcomo eu falo\b",
+            r"\btenho uma duvida\b",
+            r"\btenho uma pergunta\b",
+            r"\bnao entendi\b",
+            r"\bnao quero continuar\b",
+            r"\bdeixa pra depois\b",
+            r"\bdepois eu faco\b",
+        ]
+    )
+
+
 def is_probable_learning_goal(message: str):
     text = normalize_intent_text(message)
 
@@ -979,9 +1063,7 @@ def normalize_whatsapp_phone_for_send(phone: str):
     if digits.startswith("55") and len(digits) == 12:
         ddd = digits[2:4]
         local_number = digits[4:]
-
-        if not local_number.startswith("9"):
-            return f"55{ddd}9{local_number}"
+        return f"55{ddd}9{local_number}"
 
     return digits
 
@@ -1907,6 +1989,18 @@ def local_now():
     return datetime.now(LOCAL_TIMEZONE)
 
 
+def today_key():
+    return local_now().date().isoformat()
+
+
+def has_started_lesson_today(student: StudentDB):
+    return getattr(student, "last_lesson_date", None) == today_key()
+
+
+def mark_lesson_started_today(student: StudentDB):
+    student.last_lesson_date = today_key()
+
+
 def get_seasonal_context(now: datetime | None = None):
     now = now or local_now()
     month_day = now.strftime("%m-%d")
@@ -2629,9 +2723,13 @@ def send_scheduled_lessons(db: Session, now: datetime):
             if lesson_key in sent_keys:
                 continue
 
+            if has_started_lesson_today(student):
+                continue
+
             try:
                 if not getattr(student, "lesson_stage", None):
                     student.lesson_stage = "context_question"
+                mark_lesson_started_today(student)
                 update_lesson_engagement(student)
                 message = generate_weekly_lesson(student, db)
                 send_whatsapp_message(student.phone, message)
@@ -3232,6 +3330,17 @@ def process_whatsapp_message(phone: str, message: str, db: Session):
         )
 
     if student.current_stage == 81 and assessment_completed != "Yes":
+        if wants_portuguese_mode(message):
+            student.preferred_language = "Portuguese"
+            student.current_stage = 6
+            db.commit()
+
+            return (
+                "Combinado. Vou falar em portugues com voce.\n\n"
+                "Voce quer fazer um teste rapidinho de nivel agora? "
+                "Sao 5 perguntas curtas, uma por vez."
+            )
+
         if is_affirmative(message):
             student.preferred_language = "English"
             student.current_stage = 6
@@ -3257,6 +3366,15 @@ def process_whatsapp_message(phone: str, message: str, db: Session):
         return "Voce quer continuar a aula em ingles? Pode responder sim ou nao."
 
     if student.current_stage == 6 and assessment_completed != "Yes":
+        if wants_portuguese_mode(message):
+            student.preferred_language = "Portuguese"
+            db.commit()
+
+            return (
+                "Combinado. Vou falar em portugues com voce.\n\n"
+                "Voce quer fazer o teste rapidinho de nivel agora?"
+            )
+
         if is_negative(message):
             student.level = "Basic"
             student.current_lesson = get_start_lesson_for_level(student.level)
@@ -3296,6 +3414,25 @@ def process_whatsapp_message(phone: str, message: str, db: Session):
         question_index = student.current_stage - 50
         questions = get_placement_questions(student.level)
         answer_message = message
+
+        if is_off_topic_during_assessment(answer_message):
+            if wants_portuguese_mode(answer_message):
+                student.preferred_language = "Portuguese"
+
+            student.current_lesson = get_start_lesson_for_level(student.level)
+            reset_lesson_flow(student)
+            student.assessment_completed = "Yes"
+            student.current_stage = 70
+            db.commit()
+
+            lesson = get_current_lesson(student)
+
+            return (
+                "Sem problema. Parei o teste por aqui.\n\n"
+                f"Vou considerar por enquanto que seu nivel provavelmente e: {student.level}.\n\n"
+                f"A primeira aula sera: {format_lesson_title(lesson)}.\n\n"
+                "Quais dias e horarios voce prefere para suas aulas?"
+            )
 
         if not is_valid_placement_answer(student.level, question_index, answer_message):
             return repeat_placement_question(student.level, question_index)
@@ -3428,7 +3565,15 @@ def process_whatsapp_message(phone: str, message: str, db: Session):
 
     if student.current_stage == 7 and is_lesson_completed(student):
         if is_lesson_start_request(message):
+            if has_started_lesson_today(student):
+                return (
+                    "Por hoje ja fizemos uma aula guiada.\n\n"
+                    "Para a beta, vou liberar 1 aula por dia para cada aluno. "
+                    "Mas posso te ajudar com duvidas, frases, vocabulario ou revisao do que vimos hoje."
+                )
+
             reset_lesson_flow(student)
+            mark_lesson_started_today(student)
             db.commit()
 
             lesson = get_current_lesson(student)
@@ -3475,8 +3620,16 @@ def process_whatsapp_message(phone: str, message: str, db: Session):
         return "Percebi que voce escreveu em ingles. Voce quer continuar a aula em ingles?"
 
     if student.current_stage == 7 and is_lesson_start_request(message):
+        if has_started_lesson_today(student):
+            return (
+                "Por hoje ja fizemos uma aula guiada.\n\n"
+                "Para a beta, vou liberar 1 aula por dia para cada aluno. "
+                "Mas posso te ajudar com duvidas, frases, vocabulario ou revisao do que vimos hoje."
+            )
+
         student.lesson_stage = "context_question"
         student.messages_in_current_lesson = 0
+        mark_lesson_started_today(student)
         db.commit()
 
         lesson = get_current_lesson(student)
