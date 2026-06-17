@@ -30,6 +30,7 @@ from database import Base, SessionLocal, engine
 from models import (
     ConversationDB,
     LearningRecordDB,
+    LessonSessionDB,
     ProcessedWebhookMessageDB,
     ProgressDB,
     StudentDB,
@@ -409,6 +410,27 @@ def is_level_retest_request(message: str):
     )
 
 
+def detect_control_command(message: str):
+    text = normalize_intent_text(message)
+
+    command_patterns = [
+        ("reset", [r"\breiniciar\b", r"\bresetar\b", r"\bcomecar de novo\b", r"\bcomeçar de novo\b", r"\bzerar\b"]),
+        ("status", [r"\bstatus\b", r"\bonde estou\b", r"\bem que etapa\b"]),
+        ("progress", [r"\bmeu progresso\b", r"\bprogresso\b", r"\bminha evolucao\b", r"\bminha evolução\b"]),
+        ("review", [r"\brevisar aula\b", r"\brevisao\b", r"\brevisão\b", r"\brevisar\b"]),
+        ("pause", [r"\bpausar aulas\b", r"\bpausar\b", r"\bdar um tempo\b"]),
+        ("resume", [r"\bretomar aulas\b", r"\bvoltar aulas\b", r"\bcontinuar aulas\b", r"\bvamos continuar\b"]),
+        ("support", [r"\bsuporte\b", r"\bfalar com suporte\b", r"\bhumano\b", r"\bprofessor humano\b"]),
+        ("help", [r"\bajuda\b", r"\bcomandos\b", r"\bo que posso fazer\b"]),
+    ]
+
+    for command, patterns in command_patterns:
+        if any(re.search(pattern, text) for pattern in patterns):
+            return command
+
+    return None
+
+
 def get_current_lesson(student: StudentDB):
     lesson_number = getattr(student, "current_lesson", None)
 
@@ -495,7 +517,58 @@ def advance_lesson_stage(student: StudentDB):
         student.lesson_stage = "conversation"
 
 
-def mark_lesson_completed(student: StudentDB):
+def get_active_lesson_session(student: StudentDB, db: Session):
+    return (
+        db.query(LessonSessionDB)
+        .filter(
+            LessonSessionDB.student_id == student.id,
+            LessonSessionDB.status == "started"
+        )
+        .order_by(LessonSessionDB.id.desc())
+        .first()
+    )
+
+
+def start_lesson_session(student: StudentDB, db: Session, mode: str = "guided"):
+    active_session = get_active_lesson_session(student, db)
+
+    if active_session:
+        return active_session
+
+    lesson = get_current_lesson(student)
+    session = LessonSessionDB(
+        student_id=student.id,
+        lesson_number=student.current_lesson or lesson["number"],
+        lesson_title=lesson["title"],
+        mode=mode,
+        status="started",
+        messages_count=student.messages_in_current_lesson or 0
+    )
+
+    db.add(session)
+    return session
+
+
+def complete_active_lesson_session(student: StudentDB, db: Session):
+    active_session = get_active_lesson_session(student, db)
+
+    if not active_session:
+        return
+
+    lesson = get_current_lesson(student)
+    active_session.status = "completed"
+    active_session.completed_at = datetime.utcnow()
+    active_session.messages_count = student.messages_in_current_lesson or 0
+    active_session.summary = (
+        f"Aula concluida: {format_lesson_title(lesson)}. "
+        f"Foco: {lesson['focus']}."
+    )
+
+
+def mark_lesson_completed(student: StudentDB, db: Session = None):
+    if db:
+        complete_active_lesson_session(student, db)
+
     if (student.current_lesson or 1) < 70:
         student.current_lesson = (student.current_lesson or 1) + 1
 
@@ -508,7 +581,7 @@ def reset_lesson_flow(student: StudentDB):
     student.messages_in_current_lesson = 0
 
 
-def update_lesson_engagement(student: StudentDB):
+def update_lesson_engagement(student: StudentDB, db: Session = None):
     current_stage = get_lesson_stage(student)
 
     if current_stage == LESSON_COMPLETED_STAGE:
@@ -522,7 +595,7 @@ def update_lesson_engagement(student: StudentDB):
     ) + 2
 
     if current_stage == "challenge":
-        mark_lesson_completed(student)
+        mark_lesson_completed(student, db)
         return
 
     if (student.messages_in_current_lesson or 0) > 1:
@@ -2799,7 +2872,8 @@ def send_scheduled_lessons(db: Session, now: datetime):
                 if not getattr(student, "lesson_stage", None):
                     student.lesson_stage = "context_question"
                 mark_lesson_started_today(student)
-                update_lesson_engagement(student)
+                start_lesson_session(student, db, mode="scheduled")
+                update_lesson_engagement(student, db)
                 message = generate_weekly_lesson(student, db)
                 send_whatsapp_message(student.phone, message)
 
@@ -2911,6 +2985,48 @@ def register(student: Student, db: Session = Depends(get_db)):
 @app.get("/students")
 def get_students(db: Session = Depends(get_db)):
     return db.query(StudentDB).all()
+
+
+@app.get("/students-dashboard")
+def get_students_dashboard(db: Session = Depends(get_db)):
+    students = db.query(StudentDB).order_by(StudentDB.id.desc()).all()
+    dashboard = []
+
+    for student in students:
+        lesson = get_current_lesson(student)
+        recent_records = get_recent_learning_records(student.id, db, limit=3)
+        schedule = get_student_lesson_schedule(student)
+
+        dashboard.append(
+            {
+                "id": student.id,
+                "name": student.name,
+                "phone": student.phone,
+                "level": student.level,
+                "current_stage": student.current_stage,
+                "learning_mode": get_learning_mode_label(student),
+                "current_lesson": format_lesson_title(lesson),
+                "lesson_stage": get_lesson_stage(student),
+                "completed_lessons": get_completed_lessons_count(student.id, db),
+                "schedule": format_lesson_schedule(schedule) if schedule else None,
+                "learning_goal": student.learning_goal,
+                "interests": student.interests,
+                "engagement_minutes": student.engagement_minutes or 0,
+                "xp": student.xp or 0,
+                "last_activity": student.last_activity,
+                "recent_learning_records": [
+                    {
+                        "topic": record.topic,
+                        "original_text": record.original_text,
+                        "corrected_text": record.corrected_text,
+                        "explanation": record.explanation
+                    }
+                    for record in recent_records
+                ]
+            }
+        )
+
+    return dashboard
 
 
 @app.get("/students/{student_id}")
@@ -3268,6 +3384,230 @@ def get_or_create_whatsapp_student(phone: str, db: Session):
     return student
 
 
+def get_learning_mode_label(student: StudentDB):
+    if student.current_stage == 999:
+        return "recuperacao"
+
+    if student.current_stage in {0, 2, 3, 35, 4, 5, 6, 70, 81}:
+        return "onboarding"
+
+    if 50 <= (student.current_stage or 0) <= 54:
+        return "teste de nivel"
+
+    if student.current_stage == 7 and is_lesson_completed(student):
+        return "modo BOT"
+
+    if student.current_stage == 7:
+        return "aula guiada"
+
+    if student.current_stage == 80:
+        return "escolha de idioma"
+
+    return "conversa"
+
+
+def get_recent_learning_records(student_id: int, db: Session, limit: int = 3):
+    return (
+        db.query(LearningRecordDB)
+        .filter(LearningRecordDB.student_id == student_id)
+        .order_by(LearningRecordDB.id.desc())
+        .limit(limit)
+        .all()
+    )
+
+
+def get_completed_lessons_count(student_id: int, db: Session):
+    return (
+        db.query(LessonSessionDB)
+        .filter(
+            LessonSessionDB.student_id == student_id,
+            LessonSessionDB.status == "completed"
+        )
+        .count()
+    )
+
+
+def build_status_message(student: StudentDB, db: Session):
+    lesson = get_current_lesson(student)
+    mode = get_learning_mode_label(student)
+    schedule = get_student_lesson_schedule(student)
+    schedule_text = format_lesson_schedule(schedule) if schedule else "ainda nao definido"
+
+    return (
+        f"Status do WINGO\n\n"
+        f"Nome: {student.name or 'ainda nao informado'}\n"
+        f"Nivel: {student.level or 'Not Assessed'}\n"
+        f"Modo atual: {mode}\n"
+        f"Aula atual: {format_lesson_title(lesson)}\n"
+        f"Etapa da aula: {get_lesson_stage(student)}\n"
+        f"Aulas concluidas: {get_completed_lessons_count(student.id, db)}\n"
+        f"XP: {student.xp or 0}\n"
+        f"Horarios: {schedule_text}"
+    )
+
+
+def build_progress_message(student: StudentDB, db: Session):
+    records = get_recent_learning_records(student.id, db)
+    completed_lessons = get_completed_lessons_count(student.id, db)
+    conversations_count = (
+        db.query(ConversationDB)
+        .filter(ConversationDB.student_id == student.id)
+        .count()
+    )
+
+    lines = [
+        "Seu progresso ate agora:",
+        "",
+        f"Nivel atual: {student.level or 'Not Assessed'}",
+        f"Aulas concluidas: {completed_lessons}",
+        f"Mensagens praticadas: {conversations_count}",
+        f"Tempo estimado de pratica: {student.engagement_minutes or 0} min",
+        f"XP: {student.xp or 0}",
+    ]
+
+    if records:
+        lines.append("")
+        lines.append("Ultimos pontos para revisar:")
+
+        for record in records:
+            topic = record.topic or record.skill or "ingles"
+            corrected = record.corrected_text or record.original_text or ""
+            lines.append(f"- {topic}: {corrected[:80]}")
+    else:
+        lines.append("")
+        lines.append("Ainda nao tenho erros recorrentes salvos. Vamos construir isso nas proximas aulas.")
+
+    lines.append("")
+    lines.append("Quando sentir que evoluiu, mande: refazer teste de nivel.")
+
+    return "\n".join(lines)
+
+
+def build_review_message(student: StudentDB, db: Session):
+    records = get_recent_learning_records(student.id, db, limit=5)
+    lesson = get_current_lesson(student)
+
+    if not records:
+        return (
+            f"Vamos revisar sua aula atual: {format_lesson_title(lesson)}.\n\n"
+            f"Foco: {lesson['focus']}\n\n"
+            "Me mande uma frase usando esse tema, e eu corrijo para voce."
+        )
+
+    lines = [
+        "Vamos revisar alguns pontos importantes:",
+        "",
+    ]
+
+    for record in records[:3]:
+        if record.original_text and record.corrected_text:
+            lines.append(f"- Voce escreveu: {record.original_text}")
+            lines.append(f"  Melhor: {record.corrected_text}")
+        elif record.corrected_text:
+            lines.append(f"- Revise: {record.corrected_text}")
+
+        if record.explanation:
+            lines.append(f"  Dica: {record.explanation}")
+
+    lines.append("")
+    lines.append("Agora tente criar uma frase curta usando uma dessas correcoes.")
+
+    return "\n".join(lines)
+
+
+def reset_student_for_beta(student: StudentDB, db: Session):
+    db.query(ConversationDB).filter(ConversationDB.student_id == student.id).delete()
+    db.query(LearningRecordDB).filter(LearningRecordDB.student_id == student.id).delete()
+    db.query(ProgressDB).filter(ProgressDB.student_id == student.id).delete()
+    db.query(LessonSessionDB).filter(LessonSessionDB.student_id == student.id).delete()
+
+    student.name = ""
+    student.level = "Not Assessed"
+    student.preferred_language = "Portuguese"
+    student.assessment_completed = "No"
+    student.learning_goal = "Conversation"
+    student.interests = ""
+    student.onboarding_notes = "[]"
+    student.current_lesson = 1
+    student.lesson_stage = "context_question"
+    student.engagement_minutes = 0
+    student.messages_in_current_lesson = 0
+    student.current_stage = 2
+    student.xp = 0
+    student.streak_days = 0
+    student.lesson_schedule = None
+    student.schedule_completed = "No"
+    student.last_daily_word_date = None
+    student.last_weekly_quiz_week = None
+    student.last_lesson_date = None
+    student.last_lesson_keys = "[]"
+    student.last_activity = datetime.utcnow()
+    db.commit()
+
+
+def handle_control_command(student: StudentDB, message: str, db: Session):
+    command = detect_control_command(message)
+
+    if command == "reset":
+        reset_student_for_beta(student, db)
+        return [
+            "Combinado. Reiniciei seu cadastro no WINGO para comecarmos do zero.",
+            "Primeiro, qual e o seu nome?"
+        ]
+
+    if command == "status":
+        return build_status_message(student, db)
+
+    if command == "progress":
+        return build_progress_message(student, db)
+
+    if command == "review":
+        return build_review_message(student, db)
+
+    if command == "pause":
+        student.schedule_completed = "Paused"
+        db.commit()
+        return (
+            "Tudo bem. Pausei suas aulas automaticas por enquanto.\n\n"
+            "Quando quiser voltar, me mande: vamos continuar."
+        )
+
+    if command == "resume":
+        if get_student_lesson_schedule(student):
+            student.schedule_completed = "Yes"
+            student.current_stage = 7
+            db.commit()
+            return (
+                "Combinado. Suas aulas automaticas voltaram.\n\n"
+                "Quando quiser uma revisao agora, mande: revisar aula."
+            )
+
+        student.current_stage = 70
+        db.commit()
+        return "Combinado. Me diga dois dias e horarios para suas aulas."
+
+    if command == "support":
+        return (
+            "Claro. Vou avisar o suporte humano.\n\n"
+            "Enquanto isso, me diga em uma frase o que aconteceu para eu registrar melhor."
+        )
+
+    if command == "help":
+        return (
+            "Voce pode me mandar:\n\n"
+            "- status\n"
+            "- meu progresso\n"
+            "- revisar aula\n"
+            "- refazer teste de nivel\n"
+            "- mudar para nivel basico/intermediario/avancado\n"
+            "- pausar aulas\n"
+            "- reiniciar\n"
+            "- suporte"
+        )
+
+    return None
+
+
 def recover_student_flow(student: StudentDB, db: Session):
     if not (student.name or "").strip():
         student.current_stage = 2
@@ -3319,6 +3659,14 @@ def recover_student_flow(student: StudentDB, db: Session):
 
 def process_whatsapp_message(phone: str, message: str, db: Session):
     student = get_or_create_whatsapp_student(phone, db)
+
+    if student.current_stage != 0:
+        student.last_activity = datetime.utcnow()
+        db.commit()
+
+        command_reply = handle_control_command(student, message, db)
+        if command_reply:
+            return command_reply
 
     if student.current_stage == 999:
         student.last_activity = datetime.utcnow()
@@ -3723,6 +4071,7 @@ def process_whatsapp_message(phone: str, message: str, db: Session):
 
             reset_lesson_flow(student)
             mark_lesson_started_today(student)
+            start_lesson_session(student, db, mode="manual")
             db.commit()
 
             lesson = get_current_lesson(student)
@@ -3779,6 +4128,7 @@ def process_whatsapp_message(phone: str, message: str, db: Session):
         student.lesson_stage = "context_question"
         student.messages_in_current_lesson = 0
         mark_lesson_started_today(student)
+        start_lesson_session(student, db, mode="manual")
         db.commit()
 
         lesson = get_current_lesson(student)
@@ -3808,7 +4158,7 @@ def process_whatsapp_message(phone: str, message: str, db: Session):
     question_for_ai = None
 
     if student.current_stage == 7:
-        update_lesson_engagement(student)
+        update_lesson_engagement(student, db)
         db.commit()
 
         if get_lesson_stage(student) == "short_explanation":

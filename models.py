@@ -150,6 +150,11 @@ class StudentDB(Base):
         back_populates="student"
     )
 
+    lesson_sessions = relationship(
+        "LessonSessionDB",
+        back_populates="student"
+    )
+
 
 # ==========================================
 # PROGRESSO
@@ -261,6 +266,58 @@ class LearningRecordDB(Base):
     student = relationship(
         "StudentDB",
         back_populates="learning_records"
+    )
+
+
+# ==========================================
+# SESSOES DE AULA
+# ==========================================
+
+class LessonSessionDB(Base):
+    __tablename__ = "lesson_sessions"
+
+    id = Column(
+        Integer,
+        primary_key=True,
+        index=True
+    )
+
+    student_id = Column(
+        Integer,
+        ForeignKey("students.id")
+    )
+
+    lesson_number = Column(Integer)
+
+    lesson_title = Column(String)
+
+    mode = Column(
+        String,
+        default="guided"
+    )
+
+    status = Column(
+        String,
+        default="started"
+    )
+
+    messages_count = Column(
+        Integer,
+        default=0
+    )
+
+    summary = Column(Text)
+
+    started_at = Column(
+        DateTime,
+        default=datetime.utcnow
+    )
+
+    completed_at = Column(DateTime)
+
+    student = relationship(
+        "StudentDB",
+        back_populates="lesson_sessions"
     )
 
 
