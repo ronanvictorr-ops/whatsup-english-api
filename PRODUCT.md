@@ -163,3 +163,40 @@ Pergunta mais importante:
 - Relatorio semanal.
 - Personagem WINGO como identidade do professor.
 - Pode ser usado por aluno, professor ou escola.
+
+## Pedagogia Do Produto
+
+O WINGO deve funcionar como curso estruturado, nao como chatbot livre.
+
+Camadas pedagogicas:
+
+- Curriculo progressivo com 70 aulas.
+- Objetivo por aula.
+- Declaracao "eu consigo..." por aula.
+- Exercicios controlados por nivel.
+- Pratica de producao propria.
+- Momento de audio para pronuncia.
+- Rubrica de correcao.
+- Criterio de avanco.
+- Revisao espacada.
+- Teste de nivel com justificativa.
+
+Rubrica de correcao:
+
+- Meaning: a ideia ficou clara?
+- Grammar: a estrutura alvo foi usada corretamente?
+- Vocabulary: as palavras foram adequadas?
+- Pronunciation: se enviou audio, ficou compreensivel?
+- Independence: o aluno respondeu com autonomia?
+
+Criterio pedagogico:
+
+O aluno nao deve avancar apenas porque respondeu uma mensagem. Ele avanca quando demonstra compreensao minima do objetivo da aula e consegue produzir uma resposta curta usando o alvo da aula.
+
+Revisao espacada:
+
+- 1 dia
+- 3 dias
+- 7 dias
+- 14 dias
+- 30 dias

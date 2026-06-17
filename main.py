@@ -27,6 +27,16 @@ from sqlalchemy.orm import Session
 from sqlalchemy import text
 
 from database import Base, SessionLocal, engine
+from pedagogy import (
+    CORRECTION_RUBRIC,
+    PLACEMENT_RUBRIC,
+    PRONUNCIATION_RUBRIC,
+    SPACED_REVIEW_INTERVALS,
+    build_pedagogical_context,
+    get_advancement_criterion,
+    get_lesson_design,
+    get_placement_rubric_text,
+)
 from models import (
     ConversationDB,
     LearningRecordDB,
@@ -546,6 +556,12 @@ def get_current_lesson(student: StudentDB):
 def get_lesson_context(student: StudentDB):
     lesson = get_current_lesson(student)
     next_lesson = CURRICULUM_BY_NUMBER.get(lesson["number"] + 1)
+    stage = get_lesson_stage(student)
+    pedagogical_context = build_pedagogical_context(
+        lesson=lesson,
+        level=getattr(student, "level", "Basic"),
+        stage=stage,
+    )
 
     next_lesson_text = "This is the final lesson."
 
@@ -558,7 +574,8 @@ def get_lesson_context(student: StudentDB):
         f"Current structured lesson:\n"
         f"- Topic ({lesson['level']}): {lesson['title']}\n"
         f"- Focus: {lesson['focus']}\n"
-        f"- {next_lesson_text}"
+        f"- {next_lesson_text}\n\n"
+        f"{pedagogical_context}"
     )
 
 
@@ -635,13 +652,18 @@ def start_lesson_session(student: StudentDB, db: Session, mode: str = "guided"):
         return active_session
 
     lesson = get_current_lesson(student)
+    lesson_design = get_lesson_design(lesson)
     session = LessonSessionDB(
         student_id=student.id,
         lesson_number=student.current_lesson or lesson["number"],
         lesson_title=lesson["title"],
         mode=mode,
         status="started",
-        messages_count=student.messages_in_current_lesson or 0
+        messages_count=student.messages_in_current_lesson or 0,
+        summary=(
+            f"Objetivo: {lesson_design['objective']} "
+            f"Can-do: {lesson_design['can_do']}"
+        )
     )
 
     db.add(session)
@@ -1139,13 +1161,16 @@ def evaluate_placement_test(student: StudentDB):
         messages=[
             {
                 "role": "system",
-                "content": """
+                "content": f"""
 You are an English placement test evaluator.
 
 Analyze the student's onboarding notes and placement test answers.
 The student may answer in Portuguese, English, or a mix.
 If the student reports having no English contact or only knows isolated words, return Basic.
 Do not punish the student for answering in Portuguese; infer level from evidence of English ability.
+
+Use this rubric:
+{get_placement_rubric_text()}
 
 Return ONLY ONE level:
 
@@ -1175,12 +1200,15 @@ def evaluate_placement_test_details(student: StudentDB):
         messages=[
             {
                 "role": "system",
-                "content": """
+                "content": f"""
 You are an English placement test evaluator.
 
 Analyze the student's onboarding notes and placement test answers.
 The student may answer in Portuguese, English, or a mix.
 If the student reports having no English contact or only knows isolated words, return Basic.
+
+Use this rubric:
+{get_placement_rubric_text()}
 
 Return ONLY valid JSON with this shape:
 {
@@ -2841,6 +2869,8 @@ Teaching style:
 - Always show a corrected version when the student makes a mistake.
 - Invite the student to send audio only at the planned speaking moment or when the student asks for pronunciation help.
 - If the user's message starts with "[Voice note transcription]", treat it as something the student spoke aloud. Correct the English naturally and encourage them to repeat the improved version.
+- For voice notes, evaluate pronunciation only from available evidence: if the transcription is clear, say the audio was understandable; if the transcription seems incomplete, ask for a slower short repetition. Do not pretend to know exact phonetic details that were not measured.
+- Voice-note feedback should mention: clarity, target phrase, rhythm/confidence, and one small improvement.
 - Use the recent academic memory to review recurring mistakes naturally, but do not mention database records.
 - When a student repeats an old mistake, briefly remind them of the corrected pattern.
 - Ask one simple follow-up question to keep the student practicing.
@@ -3232,6 +3262,48 @@ def get_product_plans():
             "pratica por audio, memoria pedagogica e relatorio semanal."
         ),
         "plans": PRODUCT_PLANS,
+    }
+
+
+@app.get("/pedagogy")
+def get_pedagogy_overview():
+    return {
+        "lesson_stages": LESSON_STAGES,
+        "correction_rubric": CORRECTION_RUBRIC,
+        "placement_rubric": PLACEMENT_RUBRIC,
+        "pronunciation_rubric": PRONUNCIATION_RUBRIC,
+        "spaced_review_intervals_days": SPACED_REVIEW_INTERVALS,
+        "advancement_criteria": {
+            level: get_advancement_criterion(level)
+            for level in ["Basic", "Basic 2", "Intermediate", "Advanced", "Fluent"]
+        },
+    }
+
+
+@app.get("/pedagogy/lessons")
+def get_pedagogy_lessons():
+    return [
+        {
+            **lesson,
+            "design": get_lesson_design(lesson),
+        }
+        for lesson in CURRICULUM
+    ]
+
+
+@app.get("/pedagogy/lessons/{lesson_number}")
+def get_pedagogy_lesson(lesson_number: int):
+    lesson = CURRICULUM_BY_NUMBER.get(lesson_number)
+
+    if not lesson:
+        raise HTTPException(
+            status_code=404,
+            detail="Aula nao encontrada"
+        )
+
+    return {
+        **lesson,
+        "design": get_lesson_design(lesson),
     }
 
 
