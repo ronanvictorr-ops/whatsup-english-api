@@ -49,10 +49,21 @@ Base.metadata.create_all(bind=engine)
 
 
 def ensure_runtime_columns():
-    if engine.dialect.name != "sqlite":
-        return
+    with engine.begin() as connection:
+        if engine.dialect.name != "sqlite":
+            runtime_statements = [
+                "ALTER TABLE students ADD COLUMN IF NOT EXISTS last_weekly_report_week VARCHAR",
+                "ALTER TABLE lesson_sessions ADD COLUMN IF NOT EXISTS feedback_rating INTEGER",
+                "ALTER TABLE lesson_sessions ADD COLUMN IF NOT EXISTS feedback_text TEXT",
+                "ALTER TABLE lesson_sessions ADD COLUMN IF NOT EXISTS teacher_audio_sent VARCHAR DEFAULT 'No'",
+                "ALTER TABLE lesson_sessions ADD COLUMN IF NOT EXISTS student_audio_requested VARCHAR DEFAULT 'No'",
+            ]
 
-    with engine.connect() as connection:
+            for statement in runtime_statements:
+                connection.execute(text(statement))
+
+            return
+
         columns = connection.execute(text("PRAGMA table_info(students)")).fetchall()
         column_names = {column[1] for column in columns}
 
@@ -64,6 +75,7 @@ def ensure_runtime_columns():
             "engagement_minutes": "INTEGER DEFAULT 0",
             "messages_in_current_lesson": "INTEGER DEFAULT 0",
             "last_lesson_date": "TEXT",
+            "last_weekly_report_week": "TEXT",
         }
 
         for column_name, definition in runtime_columns.items():
@@ -71,7 +83,23 @@ def ensure_runtime_columns():
                 connection.execute(
                     text(f"ALTER TABLE students ADD COLUMN {column_name} {definition}")
                 )
-                connection.commit()
+
+        lesson_columns = connection.execute(
+            text("PRAGMA table_info(lesson_sessions)")
+        ).fetchall()
+        lesson_column_names = {column[1] for column in lesson_columns}
+        lesson_runtime_columns = {
+            "feedback_rating": "INTEGER",
+            "feedback_text": "TEXT",
+            "teacher_audio_sent": "TEXT DEFAULT 'No'",
+            "student_audio_requested": "TEXT DEFAULT 'No'",
+        }
+
+        for column_name, definition in lesson_runtime_columns.items():
+            if column_name not in lesson_column_names:
+                connection.execute(
+                    text(f"ALTER TABLE lesson_sessions ADD COLUMN {column_name} {definition}")
+                )
 
 
 ensure_runtime_columns()
@@ -101,6 +129,8 @@ LOCAL_TIMEZONE = get_local_timezone()
 DAILY_WORD_TIME = os.getenv("DAILY_WORD_TIME", "09:00")
 WEEKLY_QUIZ_DAY = os.getenv("WEEKLY_QUIZ_DAY", "Friday")
 WEEKLY_QUIZ_TIME = os.getenv("WEEKLY_QUIZ_TIME", "10:00")
+WEEKLY_REPORT_DAY = os.getenv("WEEKLY_REPORT_DAY", "Friday")
+WEEKLY_REPORT_TIME = os.getenv("WEEKLY_REPORT_TIME", "18:00")
 ACADEMIC_AUTOMATIONS_ENABLED = os.getenv("ACADEMIC_AUTOMATIONS_ENABLED", "true").lower() == "true"
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="login")
@@ -417,6 +447,7 @@ def detect_control_command(message: str):
         ("reset", [r"\breiniciar\b", r"\bresetar\b", r"\bcomecar de novo\b", r"\bcomeçar de novo\b", r"\bzerar\b"]),
         ("status", [r"\bstatus\b", r"\bonde estou\b", r"\bem que etapa\b"]),
         ("progress", [r"\bmeu progresso\b", r"\bprogresso\b", r"\bminha evolucao\b", r"\bminha evolução\b"]),
+        ("weekly_report", [r"\brelatorio semanal\b", r"\brelatorio da semana\b", r"\bresumo da semana\b"]),
         ("review", [r"\brevisar aula\b", r"\brevisao\b", r"\brevisão\b", r"\brevisar\b"]),
         ("pause", [r"\bpausar aulas\b", r"\bpausar\b", r"\bdar um tempo\b"]),
         ("resume", [r"\bretomar aulas\b", r"\bvoltar aulas\b", r"\bcontinuar aulas\b", r"\bvamos continuar\b"]),
@@ -562,6 +593,82 @@ def complete_active_lesson_session(student: StudentDB, db: Session):
     active_session.summary = (
         f"Aula concluida: {format_lesson_title(lesson)}. "
         f"Foco: {lesson['focus']}."
+    )
+
+
+def get_latest_lesson_session(student: StudentDB, db: Session):
+    return (
+        db.query(LessonSessionDB)
+        .filter(LessonSessionDB.student_id == student.id)
+        .order_by(LessonSessionDB.id.desc())
+        .first()
+    )
+
+
+def get_latest_completed_lesson_session(student: StudentDB, db: Session):
+    return (
+        db.query(LessonSessionDB)
+        .filter(
+            LessonSessionDB.student_id == student.id,
+            LessonSessionDB.status == "completed"
+        )
+        .order_by(LessonSessionDB.id.desc())
+        .first()
+    )
+
+
+def build_post_lesson_feedback_message(student: StudentDB, db: Session):
+    session = get_latest_completed_lesson_session(student, db)
+
+    if not session:
+        return None
+
+    lesson_focus = session.summary or f"Aula concluida: {session.lesson_title}."
+    records = get_recent_learning_records(student.id, db, limit=3)
+    review_lines = []
+
+    for record in records:
+        if record.corrected_text:
+            review_lines.append(f"- {record.corrected_text[:90]}")
+
+    review_text = "\n".join(review_lines) if review_lines else "- Vamos revisar as frases principais da aula."
+
+    return (
+        "Fechamento da aula de hoje:\n\n"
+        f"{lesson_focus}\n\n"
+        "Voce praticou:\n"
+        f"- {session.lesson_title}\n"
+        "- Respostas curtas no WhatsApp\n"
+        "- Correcao com feedback imediato\n\n"
+        "Para revisar depois:\n"
+        f"{review_text}\n\n"
+        "De 0 a 10, quanto essa aula te ajudou hoje?"
+    )
+
+
+def save_lesson_feedback_if_expected(student: StudentDB, message: str, db: Session):
+    session = get_latest_completed_lesson_session(student, db)
+
+    if not session or session.feedback_rating is not None:
+        return None
+
+    match = re.search(r"\b(10|[0-9])\b", message or "")
+
+    if not match:
+        return None
+
+    rating = int(match.group(1))
+    session.feedback_rating = rating
+    session.feedback_text = message
+    student.xp = (student.xp or 0) + 5
+    db.commit()
+
+    if rating >= 8:
+        return "Obrigado pelo feedback. Fico feliz que a aula ajudou. Amanha continuamos no seu ritmo."
+
+    return (
+        "Obrigado por ser sincero. Vou usar isso para deixar a proxima aula mais clara e mais pratica.\n\n"
+        "Se quiser, me diga em uma frase o que posso melhorar."
     )
 
 
@@ -1677,22 +1784,74 @@ def generate_pronunciation_audio_file(text: str):
     return audio_path
 
 
-def send_pronunciation_audio_if_needed(phone: str, question: str, answer: str):
-    audio_text = build_pronunciation_audio_text(question, answer)
+def send_pronunciation_audio_if_needed(
+    phone: str,
+    question: str,
+    answer: str,
+    student: StudentDB = None,
+    db: Session = None
+):
+    try:
+        audio_text = build_pronunciation_audio_text(question, answer)
+    except Exception as error:
+        print("Erro ao preparar audio do professor:", error)
+        return
 
     if not audio_text:
         return
 
-    audio_path = generate_pronunciation_audio_file(audio_text)
+    try:
+        audio_path = generate_pronunciation_audio_file(audio_text)
+    except Exception as error:
+        print("Erro ao gerar audio do professor:", error)
+        return
 
     try:
         media_id = upload_whatsapp_media(audio_path, "audio/mpeg")
         send_whatsapp_audio(phone, media_id)
+
+        if student and db:
+            session = get_active_lesson_session(student, db) or get_latest_lesson_session(student, db)
+
+            if session:
+                session.teacher_audio_sent = "Yes"
+                db.commit()
+    except Exception as error:
+        if db:
+            db.rollback()
+        print("Erro ao enviar audio do professor:", error)
     finally:
         try:
             audio_path.unlink(missing_ok=True)
         except OSError:
             pass
+
+
+def mark_student_audio_request_if_needed(student: StudentDB, answer: str, db: Session):
+    if not student or not db:
+        return
+
+    answer_text = normalize_intent_text(answer or "")
+    audio_terms = (
+        "audio",
+        "voice note",
+        "nota de voz",
+        "grave",
+        "gravar",
+        "manda uma mensagem de voz",
+        "mande uma mensagem de voz",
+    )
+
+    if not any(term in answer_text for term in audio_terms):
+        return
+
+    session = get_active_lesson_session(student, db) or get_latest_lesson_session(student, db)
+
+    if not session:
+        return
+
+    session.student_audio_requested = "Yes"
+    db.commit()
 
 
 def extract_english_phrases_for_audio(answer: str, limit: int = 3):
@@ -2572,6 +2731,8 @@ Standard Wingo lesson model:
 
 Personalization:
 - Use the student's interests to create examples, short scenarios, and practice prompts.
+- Every guided lesson should include at least one example or exercise connected to the student's interests, unless the student has not shared interests yet.
+- If the student has no interests saved, ask one quick preference question after the current exercise, not before finishing the required lesson step.
 - If the student likes games, use examples with playing, winning, losing, streaming, characters, missions, and teams.
 - If the student likes music, use examples with listening, singing, playing instruments, concerts, bands, and lyrics.
 - If the student likes movies or series, use examples with watching, characters, scenes, episodes, and stories.
@@ -2600,7 +2761,7 @@ Audio control:
 - After sending a repeat prompt, ask the student to answer with a short audio only if pronunciation practice is useful.
 - If the student sends many voice notes in sequence, correct briefly and guide them back to text practice.
 - Do not ask for a voice note in the first lesson message.
-- Do not ask for voice notes in challenges unless the student asked for speaking practice.
+- Ask for one short voice note near production or conversation stage, unless the student already sent audio in this lesson or seems confused.
 
 Teaching style:
 - Be warm, direct, and encouraging.
@@ -2610,7 +2771,7 @@ Teaching style:
 - Follow the language rule above even if the conversation history used another language.
 - Correct mistakes politely.
 - Always show a corrected version when the student makes a mistake.
-- Only invite the student to send a voice note if they explicitly ask for speaking or pronunciation practice.
+- Invite the student to send audio only at the planned speaking moment or when the student asks for pronunciation help.
 - If the user's message starts with "[Voice note transcription]", treat it as something the student spoke aloud. Correct the English naturally and encourage them to repeat the improved version.
 - Use the recent academic memory to review recurring mistakes naturally, but do not mention database records.
 - When a student repeats an old mistake, briefly remind them of the corrected pattern.
@@ -2737,6 +2898,83 @@ Rules:
     )
 
     return response.choices[0].message.content.strip()
+
+
+def build_weekly_progress_report(student: StudentDB, db: Session):
+    week_start = local_now().date() - timedelta(days=7)
+    recent_sessions = (
+        db.query(LessonSessionDB)
+        .filter(
+            LessonSessionDB.student_id == student.id,
+            LessonSessionDB.started_at >= datetime.combine(week_start, datetime.min.time())
+        )
+        .order_by(LessonSessionDB.started_at.desc())
+        .all()
+    )
+    recent_records = (
+        db.query(LearningRecordDB)
+        .filter(
+            LearningRecordDB.student_id == student.id,
+            LearningRecordDB.created_at >= datetime.combine(week_start, datetime.min.time())
+        )
+        .order_by(LearningRecordDB.created_at.desc())
+        .limit(5)
+        .all()
+    )
+    completed = [session for session in recent_sessions if session.status == "completed"]
+    learned_topics = []
+
+    for session in completed:
+        if session.lesson_title and session.lesson_title not in learned_topics:
+            learned_topics.append(session.lesson_title)
+
+    improvement = "participacao nas aulas"
+
+    if recent_records:
+        improvement = recent_records[0].topic or recent_records[0].skill or improvement
+
+    next_lesson = get_current_lesson(student)
+    topics_text = ", ".join(learned_topics[:4]) if learned_topics else "primeiras praticas com o WINGO"
+
+    return (
+        f"Resumo da semana - WINGO\n\n"
+        f"Aulas feitas: {len(completed)}\n"
+        f"Tempo estimado praticado: {student.engagement_minutes or 0} min\n"
+        f"XP atual: {student.xp or 0}\n"
+        f"Topicos trabalhados: {topics_text}\n"
+        f"Principal evolucao: {improvement}\n"
+        f"Proximo foco: {format_lesson_title(next_lesson)}\n\n"
+        "Quando sentir que evoluiu, voce pode mandar: refazer teste de nivel."
+    )
+
+
+def send_weekly_progress_reports(db: Session, now: datetime):
+    if now.strftime("%A") != WEEKLY_REPORT_DAY:
+        return
+
+    if not has_time_arrived(now, WEEKLY_REPORT_TIME):
+        return
+
+    week_key = current_week_key(now)
+    students = db.query(StudentDB).filter(
+        StudentDB.assessment_completed == "Yes"
+    ).all()
+
+    for student in students:
+        if getattr(student, "last_weekly_report_week", None) == week_key:
+            continue
+
+        try:
+            send_whatsapp_message(
+                student.phone,
+                build_weekly_progress_report(student, db)
+            )
+
+            student.last_weekly_report_week = week_key
+            db.commit()
+        except Exception as error:
+            db.rollback()
+            print("Erro ao enviar relatorio semanal:", student.id, error)
 
 
 def generate_weekly_lesson(student: StudentDB, db: Session):
@@ -2894,6 +3132,7 @@ async def academic_automation_loop():
             now = local_now()
             send_scheduled_lessons(db, now)
             send_weekly_quizzes(db, now)
+            send_weekly_progress_reports(db, now)
         except Exception as error:
             print("Erro nas automacoes academicas:", error)
         finally:
@@ -2996,6 +3235,18 @@ def get_students_dashboard(db: Session = Depends(get_db)):
         lesson = get_current_lesson(student)
         recent_records = get_recent_learning_records(student.id, db, limit=3)
         schedule = get_student_lesson_schedule(student)
+        latest_session = get_latest_lesson_session(student, db)
+        completed_lessons = get_completed_lessons_count(student.id, db)
+        rated_sessions = [
+            session.feedback_rating
+            for session in student.lesson_sessions
+            if session.feedback_rating is not None
+        ]
+        average_rating = (
+            round(sum(rated_sessions) / len(rated_sessions), 1)
+            if rated_sessions
+            else None
+        )
 
         dashboard.append(
             {
@@ -3007,12 +3258,22 @@ def get_students_dashboard(db: Session = Depends(get_db)):
                 "learning_mode": get_learning_mode_label(student),
                 "current_lesson": format_lesson_title(lesson),
                 "lesson_stage": get_lesson_stage(student),
-                "completed_lessons": get_completed_lessons_count(student.id, db),
+                "completed_lessons": completed_lessons,
                 "schedule": format_lesson_schedule(schedule) if schedule else None,
                 "learning_goal": student.learning_goal,
                 "interests": student.interests,
                 "engagement_minutes": student.engagement_minutes or 0,
                 "xp": student.xp or 0,
+                "average_lesson_rating": average_rating,
+                "latest_lesson_session": {
+                    "lesson_title": latest_session.lesson_title,
+                    "status": latest_session.status,
+                    "teacher_audio_sent": latest_session.teacher_audio_sent,
+                    "student_audio_requested": latest_session.student_audio_requested,
+                    "feedback_rating": latest_session.feedback_rating,
+                    "started_at": latest_session.started_at,
+                    "completed_at": latest_session.completed_at,
+                } if latest_session else None,
                 "last_activity": student.last_activity,
                 "recent_learning_records": [
                     {
@@ -3454,6 +3715,25 @@ def build_progress_message(student: StudentDB, db: Session):
         .filter(ConversationDB.student_id == student.id)
         .count()
     )
+    sessions = (
+        db.query(LessonSessionDB)
+        .filter(LessonSessionDB.student_id == student.id)
+        .all()
+    )
+    rated_sessions = [
+        session.feedback_rating
+        for session in sessions
+        if session.feedback_rating is not None
+    ]
+    audio_lessons = [
+        session for session in sessions
+        if session.teacher_audio_sent == "Yes" or session.student_audio_requested == "Yes"
+    ]
+    average_rating = (
+        round(sum(rated_sessions) / len(rated_sessions), 1)
+        if rated_sessions
+        else None
+    )
 
     lines = [
         "Seu progresso ate agora:",
@@ -3461,9 +3741,13 @@ def build_progress_message(student: StudentDB, db: Session):
         f"Nivel atual: {student.level or 'Not Assessed'}",
         f"Aulas concluidas: {completed_lessons}",
         f"Mensagens praticadas: {conversations_count}",
+        f"Aulas com pratica oral: {len(audio_lessons)}",
         f"Tempo estimado de pratica: {student.engagement_minutes or 0} min",
         f"XP: {student.xp or 0}",
     ]
+
+    if average_rating is not None:
+        lines.append(f"Sua nota media das aulas: {average_rating}/10")
 
     if records:
         lines.append("")
@@ -3561,6 +3845,9 @@ def handle_control_command(student: StudentDB, message: str, db: Session):
     if command == "progress":
         return build_progress_message(student, db)
 
+    if command == "weekly_report":
+        return build_weekly_progress_report(student, db)
+
     if command == "review":
         return build_review_message(student, db)
 
@@ -3597,6 +3884,7 @@ def handle_control_command(student: StudentDB, message: str, db: Session):
             "Voce pode me mandar:\n\n"
             "- status\n"
             "- meu progresso\n"
+            "- relatorio semanal\n"
             "- revisar aula\n"
             "- refazer teste de nivel\n"
             "- mudar para nivel basico/intermediario/avancado\n"
@@ -3667,6 +3955,10 @@ def process_whatsapp_message(phone: str, message: str, db: Session):
         command_reply = handle_control_command(student, message, db)
         if command_reply:
             return command_reply
+
+        feedback_reply = save_lesson_feedback_if_expected(student, message, db)
+        if feedback_reply:
+            return feedback_reply
 
     if student.current_stage == 999:
         student.last_activity = datetime.utcnow()
@@ -4156,6 +4448,7 @@ def process_whatsapp_message(phone: str, message: str, db: Session):
         return replies
 
     question_for_ai = None
+    lesson_was_completed = is_lesson_completed(student)
 
     if student.current_stage == 7:
         update_lesson_engagement(student, db)
@@ -4173,12 +4466,20 @@ def process_whatsapp_message(phone: str, message: str, db: Session):
                 f"Student message: {message}"
             )
 
-    return generate_ai_answer(
+    answer = generate_ai_answer(
         student=student,
         question=message,
         db=db,
         ai_question=question_for_ai
     )
+
+    if student.current_stage == 7 and not lesson_was_completed and is_lesson_completed(student):
+        feedback_message = build_post_lesson_feedback_message(student, db)
+
+        if feedback_message:
+            return [answer, feedback_message]
+
+    return answer
 
 
 
@@ -4205,6 +4506,8 @@ def get_student_lesson_schedule_endpoint(
         "daily_word_time": DAILY_WORD_TIME,
         "weekly_quiz_day": WEEKLY_QUIZ_DAY,
         "weekly_quiz_time": WEEKLY_QUIZ_TIME,
+        "weekly_report_day": WEEKLY_REPORT_DAY,
+        "weekly_report_time": WEEKLY_REPORT_TIME,
     }
 
 
@@ -4415,11 +4718,18 @@ async def receive_message(
             )
 
         reply_text = "\n".join(get_reply_text(item) for item in replies)
+        student = db.query(StudentDB).filter(
+            StudentDB.phone == phone
+        ).first()
+
+        mark_student_audio_request_if_needed(student, reply_text, db)
 
         send_pronunciation_audio_if_needed(
             phone=phone,
             question=message,
-            answer=reply_text
+            answer=reply_text,
+            student=student,
+            db=db
         )
 
     except Exception as e:

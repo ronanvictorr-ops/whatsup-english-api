@@ -128,6 +128,8 @@ class StudentDB(Base):
 
     last_weekly_quiz_week = Column(String)
 
+    last_weekly_report_week = Column(String)
+
     last_lesson_date = Column(String)
 
     last_lesson_keys = Column(
@@ -307,6 +309,20 @@ class LessonSessionDB(Base):
     )
 
     summary = Column(Text)
+
+    feedback_rating = Column(Integer)
+
+    feedback_text = Column(Text)
+
+    teacher_audio_sent = Column(
+        String,
+        default="No"
+    )
+
+    student_audio_requested = Column(
+        String,
+        default="No"
+    )
 
     started_at = Column(
         DateTime,
