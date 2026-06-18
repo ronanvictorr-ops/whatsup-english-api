@@ -536,6 +536,38 @@ def is_schedule_change_request(message: str):
     )
 
 
+def detect_language_switch_request(message: str):
+    text = normalize_intent_text(message)
+
+    english_patterns = [
+        r"\benglish only\b",
+        r"\bonly english\b",
+        r"\bspeak (?:only )?english\b",
+        r"\bcontinue in english\b",
+        r"\blesson in english\b",
+        r"\b(?:fale|fala|continue|aula).*somente.*ingles\b",
+        r"\b(?:fale|fala|continue|aula).*so em ingles\b",
+        r"\bsomente em ingles\b",
+    ]
+    portuguese_patterns = [
+        r"\bportuguese only\b",
+        r"\bonly portuguese\b",
+        r"\bspeak (?:only )?portuguese\b",
+        r"\bcontinue in portuguese\b",
+        r"\b(?:fale|fala|continue|aula).*somente.*portugues\b",
+        r"\b(?:fale|fala|continue|aula).*so em portugues\b",
+        r"\bsomente em portugues\b",
+    ]
+
+    if any(re.search(pattern, text) for pattern in english_patterns):
+        return "English"
+
+    if any(re.search(pattern, text) for pattern in portuguese_patterns):
+        return "Portuguese"
+
+    return None
+
+
 def is_ready_for_lesson(message: str):
     text = normalize_intent_text(message)
     return (
@@ -911,7 +943,7 @@ def build_deterministic_guided_reply(student: StudentDB, answer: str, db: Sessio
 
     language = normalize_language_preference(student.preferred_language)
 
-    if language == "English":
+    if language == "English" or looks_like_english_message(answer):
         reply = (
             f"Great! \"{answer.strip()}\" is a correct Past Simple sentence.\n\n"
             "Studied is the past form of study. Because study ends in consonant + y, "
@@ -1049,7 +1081,8 @@ def looks_like_english_message(message: str):
 
     english_markers = [
         " i ", " i'm ", " my ", " you ", " are ", " is ", " want ", " need ",
-        " like ", " have ", " study ", " english ", " hello ", " hi ",
+        " like ", " have ", " study ", " studied ", " worked ", " played ",
+        " yesterday ", " don't ", " dont ", " english ", " hello ", " hi ",
         "good morning", "good afternoon", "good evening", "where are",
         "what is", "what's", "from brazil"
     ]
@@ -2982,6 +3015,11 @@ def generate_ai_answer(
     interests = getattr(student, "interests", None) or "not informed yet"
     lesson_stage = get_lesson_stage(student)
     lesson_mode = "bot_after_lesson" if lesson_stage == LESSON_COMPLETED_STAGE else "guided_lesson"
+    if lesson_mode == "guided_lesson" and looks_like_english_message(question):
+        language_instruction = (
+            "Reply entirely in English for this turn. Do not include Portuguese translations "
+            "or explanations. Keep the English appropriate for the student's level."
+        )
     engagement_minutes = getattr(student, "engagement_minutes", 0) or 0
     lesson_messages = getattr(student, "messages_in_current_lesson", 0) or 0
     learning_summary = get_recent_learning_summary(student.id, db)
@@ -4809,6 +4847,17 @@ def process_whatsapp_message(phone: str, message: str, db: Session):
         ]
 
     if student.current_stage == 7:
+        requested_language = detect_language_switch_request(message)
+
+        if requested_language:
+            student.preferred_language = requested_language
+            db.commit()
+
+            if requested_language == "English":
+                return "Got it. I will continue the guided lesson only in English."
+
+            return "Combinado. Vou continuar a aula guiada somente em portugues."
+
         if is_schedule_change_request(message):
             student.current_stage = 70
             db.commit()
@@ -4823,9 +4872,6 @@ def process_whatsapp_message(phone: str, message: str, db: Session):
             student.level = requested_level
             student.current_lesson = get_start_lesson_for_level(requested_level)
             reset_lesson_flow(student)
-            student.preferred_language = (
-                "Adaptive"
-            )
             if requested_level in {"Advanced", "Fluent"}:
                 student.current_stage = 80
             db.commit()
