@@ -536,6 +536,22 @@ def is_schedule_change_request(message: str):
     )
 
 
+def is_exercise_request(message: str):
+    text = normalize_intent_text(message)
+    return any(
+        re.search(pattern, text)
+        for pattern in [
+            r"\bexercici[oa]s?\b",
+            r"\bexercise\b",
+            r"\bquiz\b",
+            r"\bpraticar\b",
+            r"\bpractice\b",
+            r"\bfazer questoes\b",
+            r"\bfazer perguntas\b",
+        ]
+    )
+
+
 def detect_language_switch_request(message: str):
     text = normalize_intent_text(message)
 
@@ -949,6 +965,36 @@ def build_past_simple_work_quiz(prefix: str = ""):
     }
 
 
+def build_past_simple_travel_quiz(prefix: str = ""):
+    body = (
+        f"{prefix}\n\n" if prefix else ""
+    ) + "Complete the sentence:\n\nLast summer, I ___ to the beach."
+    return {
+        "type": "buttons",
+        "body": body,
+        "buttons": [
+            {"id": "quiz:past_travel:wrong:travel", "title": "travel"},
+            {"id": "quiz:past_travel:correct:traveled", "title": "traveled"},
+            {"id": "quiz:past_travel:wrong:traveling", "title": "traveling"},
+        ],
+    }
+
+
+def build_past_simple_cook_quiz(prefix: str = ""):
+    body = (
+        f"{prefix}\n\n" if prefix else ""
+    ) + "Complete the sentence:\n\nHe ___ dinner yesterday."
+    return {
+        "type": "buttons",
+        "body": body,
+        "buttons": [
+            {"id": "quiz:past_cook:correct:cooked", "title": "cooked"},
+            {"id": "quiz:past_cook:wrong:cook", "title": "cook"},
+            {"id": "quiz:past_cook:wrong:cooking", "title": "cooking"},
+        ],
+    }
+
+
 def parse_quiz_button_message(message: str):
     match = re.fullmatch(
         r"__button__:(quiz:[^:]+:(?:correct|wrong):[^:]+)::(.+)",
@@ -976,7 +1022,69 @@ def build_quiz_retry(quiz_id: str):
             "Not quite. We need the Past Simple because the action happened yesterday. Try again."
         )
 
+    if quiz_id == "past_travel":
+        return build_past_simple_travel_quiz(
+            "Not quite. 'Last summer' shows a finished time in the past. Try again."
+        )
+
+    if quiz_id == "past_cook":
+        return build_past_simple_cook_quiz(
+            "Not quite. 'Yesterday' asks for the Past Simple. Try again."
+        )
+
     return None
+
+
+def build_quiz_correct_reply(quiz_id: str, student: StudentDB, db: Session):
+    student.xp = (student.xp or 0) + 2
+    db.commit()
+
+    if quiz_id == "past_work":
+        return [
+            "Correct! Work is a regular verb: work -> worked.",
+            build_past_simple_travel_quiz("Question 2 of 3"),
+        ]
+
+    if quiz_id == "past_travel":
+        return [
+            "Correct! Travel is regular: travel -> traveled.",
+            build_past_simple_cook_quiz("Question 3 of 3"),
+        ]
+
+    if quiz_id == "past_cook":
+        return (
+            "Correct! Cook becomes cooked in the Past Simple.\n\n"
+            "Quiz finished: 3 questions completed. Now write one sentence about what you did yesterday."
+        )
+
+    return "Correct!"
+
+
+def has_recent_past_simple_context(student: StudentDB, message: str, db: Session):
+    text = normalize_intent_text(message)
+
+    if "past simple" in text or "simple past" in text or "passado simples" in text:
+        return True
+
+    if get_current_lesson(student)["title"] == "Past Simple":
+        return True
+
+    recent = (
+        db.query(ConversationDB)
+        .filter(ConversationDB.student_id == student.id)
+        .order_by(ConversationDB.id.desc())
+        .limit(4)
+        .all()
+    )
+    recent_text = " ".join(
+        f"{item.question or ''} {item.answer or ''}"
+        for item in recent
+    )
+    normalized_recent = normalize_intent_text(recent_text)
+    return any(
+        marker in normalized_recent
+        for marker in ["past simple", "simple past", "passado simples"]
+    )
 
 
 def build_deterministic_guided_reply(student: StudentDB, answer: str, db: Session):
@@ -4586,6 +4694,12 @@ def process_whatsapp_message(phone: str, message: str, db: Session):
             if retry:
                 return retry
 
+        return build_quiz_correct_reply(
+            quiz_answer["quiz_id"],
+            student,
+            db,
+        )
+
     if student.current_stage != 0:
         student.last_activity = datetime.utcnow()
         db.commit()
@@ -4996,6 +5110,15 @@ def process_whatsapp_message(phone: str, message: str, db: Session):
                 return "Got it. I will continue the guided lesson only in English."
 
             return "Combinado. Vou continuar a aula guiada somente em portugues."
+
+        if is_exercise_request(message) and has_recent_past_simple_context(
+            student,
+            message,
+            db,
+        ):
+            return build_past_simple_work_quiz(
+                "Vamos praticar Past Simple. Escolha a resposta correta. Question 1 of 3"
+            )
 
         if is_schedule_change_request(message):
             student.current_stage = 70
