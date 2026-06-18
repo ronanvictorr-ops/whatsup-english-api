@@ -48,6 +48,7 @@ from models import (
     LessonSessionDB,
     OperationalMetricDB,
     OutboundDeliveryDB,
+    PronunciationAttemptDB,
     ProcessedWebhookMessageDB,
     ProgressDB,
     StudentDB,
@@ -69,6 +70,11 @@ from wingo.idempotency import (
     send_reply_once,
 )
 from wingo.retries import call_with_retry, http_get_with_retry, http_post_with_retry
+from wingo.pronunciation import (
+    assess_pronunciation,
+    build_pronunciation_feedback,
+    extract_reference_text,
+)
 
 
 
@@ -2875,6 +2881,90 @@ def transcribe_whatsapp_audio(media_id: str):
             pass
 
 
+def get_expected_pronunciation_reference(student: StudentDB, db: Session):
+    session = get_active_lesson_session(student, db) or get_latest_lesson_session(student, db)
+    if not session or session.student_audio_requested != "Yes":
+        return None, session
+
+    conversations = (
+        db.query(ConversationDB)
+        .filter(ConversationDB.student_id == student.id)
+        .order_by(ConversationDB.id.desc())
+        .limit(8)
+        .all()
+    )
+    for conversation in conversations:
+        reference_text = extract_reference_text(conversation.answer)
+        if reference_text:
+            return reference_text, session
+    return None, session
+
+
+def evaluate_expected_pronunciation(
+    student: StudentDB,
+    audio_path: Path,
+    transcript: str,
+    message_id: str | None,
+    db: Session,
+):
+    if message_id:
+        existing = db.query(PronunciationAttemptDB).filter(
+            PronunciationAttemptDB.message_id == message_id
+        ).first()
+        if existing:
+            return existing.feedback
+
+    reference_text, session = get_expected_pronunciation_reference(student, db)
+    if not reference_text:
+        return None
+
+    try:
+        result = assess_pronunciation(audio_path, reference_text)
+        error = None
+    except Exception as assessment_error:
+        log_event(
+            "pronunciation_assessment_failed",
+            student_id=student.id,
+            message_id=message_id,
+            error=str(assessment_error),
+        )
+        result = {
+            "provider": "azure",
+            "status": "acoustic_error",
+            "accuracy_score": None,
+            "fluency_score": None,
+            "completeness_score": None,
+            "prosody_score": None,
+            "pronunciation_score": None,
+            "words": [],
+        }
+        error = str(assessment_error)[:1000]
+
+    feedback = build_pronunciation_feedback(result, reference_text, transcript)
+    db.add(
+        PronunciationAttemptDB(
+            student_id=student.id,
+            message_id=message_id,
+            provider=result.get("provider"),
+            status=result.get("status"),
+            reference_text=reference_text,
+            transcript=transcript,
+            accuracy_score=result.get("accuracy_score"),
+            fluency_score=result.get("fluency_score"),
+            completeness_score=result.get("completeness_score"),
+            prosody_score=result.get("prosody_score"),
+            pronunciation_score=result.get("pronunciation_score"),
+            word_details=json.dumps(result.get("words") or [], ensure_ascii=False),
+            feedback=feedback,
+            error=error,
+        )
+    )
+    if session:
+        session.student_audio_requested = "No"
+    db.commit()
+    return feedback
+
+
 def normalize_language_preference(value: str):
     text = (value or "").strip().lower()
 
@@ -4747,6 +4837,13 @@ def build_dashboard_student(student: StudentDB, db: Session):
     schedule = get_student_lesson_schedule(student)
     latest_session = get_latest_lesson_session(student, db)
     recent_records = get_recent_learning_records(student.id, db, limit=3)
+    pronunciation_attempts = (
+        db.query(PronunciationAttemptDB)
+        .filter(PronunciationAttemptDB.student_id == student.id)
+        .order_by(PronunciationAttemptDB.id.desc())
+        .limit(5)
+        .all()
+    )
     completed_lessons = get_completed_lessons_count(student.id, db)
     rated_sessions = [
         session.feedback_rating
@@ -4805,6 +4902,22 @@ def build_dashboard_student(student: StudentDB, db: Session):
                 "explanation": record.explanation,
             }
             for record in recent_records
+        ],
+        "pronunciation_attempts": [
+            {
+                "reference_text": attempt.reference_text,
+                "transcript": attempt.transcript,
+                "provider": attempt.provider,
+                "status": attempt.status,
+                "accuracy_score": attempt.accuracy_score,
+                "fluency_score": attempt.fluency_score,
+                "completeness_score": attempt.completeness_score,
+                "prosody_score": attempt.prosody_score,
+                "pronunciation_score": attempt.pronunciation_score,
+                "feedback": attempt.feedback,
+                "created_at": attempt.created_at,
+            }
+            for attempt in pronunciation_attempts
         ],
     }
 
@@ -5839,6 +5952,11 @@ def operational_health(db: Session = Depends(get_db)):
     return {
         "status": "degraded" if degraded else "ok",
         "database": "ok",
+        "pronunciation_assessment": (
+            "azure_acoustic"
+            if os.getenv("AZURE_SPEECH_KEY") and os.getenv("AZURE_SPEECH_REGION")
+            else "transcription_only"
+        ),
         "errors_last_15_minutes": recent_errors,
         "failed_deliveries_last_15_minutes": failed_deliveries,
         "stuck_inbound_messages": stuck_inbound,
@@ -6023,6 +6141,8 @@ async def receive_message(
     phone = None
     message_id = None
     message = ""
+    incoming_audio_path = None
+    pronunciation_feedback = None
 
     try:
         value = data["entry"][0]["changes"][0]["value"]
@@ -6075,9 +6195,17 @@ async def receive_message(
                 complete_inbound_message(db, inbound_record)
                 return {"status": "ok"}
 
-            transcript = transcribe_whatsapp_audio(media_id)
+            incoming_audio_path = download_whatsapp_audio(media_id)
+            try:
+                transcript = transcribe_audio_file(incoming_audio_path)
+            except Exception:
+                incoming_audio_path.unlink(missing_ok=True)
+                incoming_audio_path = None
+                raise
 
             if not transcript:
+                incoming_audio_path.unlink(missing_ok=True)
+                incoming_audio_path = None
                 send_reply_once(
                     db=db,
                     idempotency_key=f"{message_id or phone}:transcription_failed",
@@ -6120,6 +6248,18 @@ async def receive_message(
 
         student = get_or_create_whatsapp_student(phone, db)
         state_snapshot = snapshot_student(student)
+        if incoming_audio_path:
+            try:
+                pronunciation_feedback = evaluate_expected_pronunciation(
+                    student=student,
+                    audio_path=incoming_audio_path,
+                    transcript=transcript,
+                    message_id=message_id,
+                    db=db,
+                )
+            finally:
+                incoming_audio_path.unlink(missing_ok=True)
+                incoming_audio_path = None
         flow_name = resolve_flow(student, message)
         log_event(
             "message_processing_started",
@@ -6136,6 +6276,8 @@ async def receive_message(
         )
 
         replies = reply if isinstance(reply, list) else [reply]
+        if pronunciation_feedback:
+            replies = [pronunciation_feedback, *replies]
 
         delivery_started = True
         for reply_index, reply_message in enumerate(replies):
@@ -6191,6 +6333,11 @@ async def receive_message(
         )
 
     except Exception as e:
+        if incoming_audio_path:
+            try:
+                incoming_audio_path.unlink(missing_ok=True)
+            except OSError:
+                pass
         log_event(
             "message_processing_failed",
             message_id=message_id,

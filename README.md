@@ -96,6 +96,8 @@ Variaveis de ambiente necessarias:
 DATABASE_URL=
 SECRET_KEY=
 OPENAI_API_KEY=
+AZURE_SPEECH_KEY=
+AZURE_SPEECH_REGION=
 META_PHONE_NUMBER_ID=
 META_ACCESS_TOKEN=
 META_VERIFY_TOKEN=
@@ -117,6 +119,10 @@ O campo `messages` precisa estar inscrito no webhook do WhatsApp.
 O painel visual fica disponivel em `/dashboard`. Alunos entram com o mesmo
 email e senha da API. Professores usam o valor seguro configurado em
 `DASHBOARD_ADMIN_TOKEN`; gere uma chave longa e aleatoria para producao.
+
+As variaveis `AZURE_SPEECH_KEY` e `AZURE_SPEECH_REGION` ativam notas acusticas
+de pronuncia. Sem elas, o WINGO transcreve o audio e informa claramente que a
+avaliacao detalhada nao esta disponivel, sem inventar pontuacoes.
 
 ---
 

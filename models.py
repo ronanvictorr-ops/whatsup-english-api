@@ -274,6 +274,27 @@ class LearningRecordDB(Base):
     )
 
 
+class PronunciationAttemptDB(Base):
+    __tablename__ = "pronunciation_attempts"
+
+    id = Column(Integer, primary_key=True, index=True)
+    student_id = Column(Integer, ForeignKey("students.id"), index=True, nullable=False)
+    message_id = Column(String, unique=True, index=True)
+    provider = Column(String, default="transcription_only")
+    status = Column(String, default="completed", index=True)
+    reference_text = Column(Text)
+    transcript = Column(Text)
+    accuracy_score = Column(Float)
+    fluency_score = Column(Float)
+    completeness_score = Column(Float)
+    prosody_score = Column(Float)
+    pronunciation_score = Column(Float)
+    word_details = Column(Text, default="[]")
+    feedback = Column(Text)
+    error = Column(Text)
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+
+
 # ==========================================
 # SESSOES DE AULA
 # ==========================================
