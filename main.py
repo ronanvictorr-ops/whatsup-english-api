@@ -552,6 +552,22 @@ def is_exercise_request(message: str):
     )
 
 
+def is_next_lesson_question(message: str):
+    text = normalize_intent_text(message)
+    return any(
+        re.search(pattern, text)
+        for pattern in [
+            r"\bqual.*proxima aula\b",
+            r"\bo que.*proxima aula\b",
+            r"\bo que.*vamos aprender.*proxim\b",
+            r"\bqual.*proximo tema\b",
+            r"\baula de amanha\b",
+            r"\bnext lesson\b",
+            r"\bwhat.*learn next\b",
+        ]
+    )
+
+
 def detect_language_switch_request(message: str):
     text = normalize_intent_text(message)
 
@@ -824,11 +840,7 @@ def build_post_lesson_feedback_message(student: StudentDB, db: Session):
             review_lines.append(f"- {record.corrected_text[:90]}")
 
     review_text = "\n".join(review_lines) if review_lines else "- Vamos revisar as frases principais da aula."
-    next_lesson = get_current_lesson(student)
-    next_hook = (
-        f"Na proxima aula: {format_lesson_title(next_lesson)}. "
-        f"Voce vai descobrir como usar {next_lesson['focus'].lower()} em uma conversa real."
-    )
+    next_hook = build_next_lesson_preview(student, db, closing_hook=True)
 
     return (
         "Fechamento da aula de hoje:\n\n"
@@ -842,6 +854,78 @@ def build_post_lesson_feedback_message(student: StudentDB, db: Session):
         f"{next_hook}\n\n"
         "De 0 a 10, quanto essa aula te ajudou hoje?"
     )
+
+
+def get_next_lesson_for_preview(student: StudentDB):
+    current_lesson = get_current_lesson(student)
+
+    if is_lesson_completed(student):
+        return current_lesson
+
+    return CURRICULUM_BY_NUMBER.get(current_lesson["number"] + 1)
+
+
+def build_next_lesson_preview(
+    student: StudentDB,
+    db: Session,
+    closing_hook: bool = False,
+):
+    next_lesson = get_next_lesson_for_preview(student)
+
+    if not next_lesson:
+        return (
+            "Voce chegou ao final da trilha atual. O proximo passo sera uma revisao personalizada."
+        )
+
+    design = get_lesson_design(next_lesson)
+    language = normalize_language_preference(student.preferred_language)
+    response_language = "English" if language == "English" else "Portuguese"
+    interests = getattr(student, "interests", None) or "not informed"
+
+    try:
+        client = get_openai_client()
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        f"Write a short preview in {response_language} for the student's next English lesson. "
+                        "Explain the theme, what the student will learn, and one practical situation where it helps. "
+                        "Finish with a curiosity hook that creates interest, but do not start teaching the lesson. "
+                        "Use 45 to 70 words, no labels, no exercise, and no question requiring an answer."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": (
+                        f"Lesson: {next_lesson['title']}\n"
+                        f"Focus: {next_lesson['focus']}\n"
+                        f"Objective: {design['objective']}\n"
+                        f"Can do: {design['can_do']}\n"
+                        f"Student goal: {student.learning_goal}\n"
+                        f"Student interests: {interests}\n"
+                        f"This is an end-of-lesson hook: {closing_hook}"
+                    ),
+                },
+            ],
+        )
+        preview = response.choices[0].message.content.strip()
+    except Exception as error:
+        print("Erro ao gerar previa da proxima aula:", error)
+        if response_language == "English":
+            preview = (
+                f"Next lesson: {next_lesson['title']}. We will explore {next_lesson['focus'].lower()} "
+                "and use it in a practical conversation. There is one useful pattern waiting for you."
+            )
+        else:
+            preview = (
+                f"Na proxima aula, vamos estudar {next_lesson['title']}. "
+                "Voce vai entender o tema em uma situacao pratica e descobrir um novo padrao para conversar melhor."
+            )
+
+    heading = "Next lesson" if response_language == "English" else "Proxima aula"
+    return f"{heading}: {next_lesson['title']}\n\n{preview}"
 
 
 def save_lesson_feedback_if_expected(student: StudentDB, message: str, db: Session):
@@ -4926,6 +5010,12 @@ def process_whatsapp_message(phone: str, message: str, db: Session):
         feedback_reply = save_lesson_feedback_if_expected(student, message, db)
         if feedback_reply:
             return feedback_reply
+
+        if (
+            student.current_stage in {7, 82, 83, 84}
+            and is_next_lesson_question(message)
+        ):
+            return build_next_lesson_preview(student, db)
 
     if student.current_stage == 999:
         student.last_activity = datetime.utcnow()
