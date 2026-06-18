@@ -891,6 +891,49 @@ def get_recent_relevant_lesson_answer(student: StudentDB, db: Session):
     return fallback
 
 
+def save_guided_exchange(student: StudentDB, question: str, answer: str, db: Session):
+    db.add(
+        ConversationDB(
+            student_id=student.id,
+            question=question,
+            answer=answer,
+        )
+    )
+    db.commit()
+
+
+def build_deterministic_guided_reply(student: StudentDB, answer: str, db: Session):
+    lesson = get_current_lesson(student)
+    stage = get_lesson_stage(student)
+
+    if lesson["title"] != "Past Simple" or stage != "short_explanation":
+        return None
+
+    language = normalize_language_preference(student.preferred_language)
+
+    if language == "English":
+        reply = (
+            f"Great! \"{answer.strip()}\" is a correct Past Simple sentence.\n\n"
+            "Studied is the past form of study. Because study ends in consonant + y, "
+            "we change y to i and add -ed:\n\n"
+            "study -> studied\n\n"
+            "We use the Past Simple for finished actions.\n\n"
+            "Now complete: Yesterday, I ___ (work) on a project."
+        )
+    else:
+        reply = (
+            f"Muito bem! \"{answer.strip()}\" e uma frase correta no Past Simple.\n\n"
+            "Studied e o passado de study. Como study termina em consoante + y, "
+            "trocamos y por i e acrescentamos -ed:\n\n"
+            "study -> studied\n\n"
+            "Usamos o Past Simple para acoes que ja terminaram.\n\n"
+            "Agora complete: Yesterday, I ___ (work) on a project."
+        )
+
+    save_guided_exchange(student, answer, reply, db)
+    return reply
+
+
 def resume_stuck_guided_lesson(student: StudentDB, message: str, db: Session):
     active_session = get_active_lesson_session(student, db)
 
@@ -903,11 +946,26 @@ def resume_stuck_guided_lesson(student: StudentDB, message: str, db: Session):
     if is_lesson_completed(student):
         student.lesson_stage = "short_explanation" if previous_answer else "context_question"
         student.messages_in_current_lesson = 1 if previous_answer else 0
+    elif previous_answer and get_lesson_stage(student) == "context_question":
+        student.lesson_stage = "short_explanation"
+        student.messages_in_current_lesson = max(
+            student.messages_in_current_lesson or 0,
+            1,
+        )
 
     db.commit()
 
     if not previous_answer:
         return build_lesson_opening_replies(student, db)
+
+    deterministic_reply = build_deterministic_guided_reply(
+        student,
+        previous_answer,
+        db,
+    )
+
+    if deterministic_reply:
+        return deterministic_reply
 
     lesson = get_current_lesson(student)
     return generate_ai_answer(
@@ -2981,6 +3039,9 @@ Lesson guidance:
 - Do not jump to future lessons unless the student explicitly asks for a preview.
 - Do not advance the course just because the student sent one answer; reinforce, correct, and practice first.
 - If the student asks "what should I study?" or "start the class", begin the current lesson.
+- In guided_lesson mode, every student message is first an answer to the current exercise.
+- Example: if the lesson asks what the student did yesterday and they answer "I studied Python", teach the Past Simple in that sentence. Never start a free conversation about Python.
+- Do not ask what project, hobby, subject, movie, game, or activity the student means unless that question is explicitly the current lesson exercise.
 
 After-lesson BOT mode:
 - If Current mode is bot_after_lesson, the guided class has already finished.
@@ -3112,20 +3173,21 @@ Brand voice:
         }
     ]
 
-    for conversation in reversed(history):
-        messages.append(
-            {
-                "role": "user",
-                "content": conversation.question
-            }
-        )
+    if lesson_mode == "bot_after_lesson":
+        for conversation in reversed(history):
+            messages.append(
+                {
+                    "role": "user",
+                    "content": conversation.question
+                }
+            )
 
-        messages.append(
-            {
-                "role": "assistant",
-                "content": conversation.answer
-            }
-        )
+            messages.append(
+                {
+                    "role": "assistant",
+                    "content": conversation.answer
+                }
+            )
 
     messages.append(
         {
@@ -4834,6 +4896,15 @@ def process_whatsapp_message(phone: str, message: str, db: Session):
     if student.current_stage == 7:
         update_lesson_engagement(student, db)
         db.commit()
+
+        deterministic_reply = build_deterministic_guided_reply(
+            student,
+            message,
+            db,
+        )
+
+        if deterministic_reply:
+            return deterministic_reply
 
         if get_lesson_stage(student) == "short_explanation":
             lesson = get_current_lesson(student)
