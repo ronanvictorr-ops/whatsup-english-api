@@ -934,6 +934,51 @@ def save_guided_exchange(student: StudentDB, question: str, answer: str, db: Ses
     db.commit()
 
 
+def build_past_simple_work_quiz(prefix: str = ""):
+    body = (
+        f"{prefix}\n\n" if prefix else ""
+    ) + "Complete the sentence:\n\nYesterday, I ___ on a project."
+    return {
+        "type": "buttons",
+        "body": body,
+        "buttons": [
+            {"id": "quiz:past_work:wrong:work", "title": "work"},
+            {"id": "quiz:past_work:correct:worked", "title": "worked"},
+            {"id": "quiz:past_work:wrong:working", "title": "working"},
+        ],
+    }
+
+
+def parse_quiz_button_message(message: str):
+    match = re.fullmatch(
+        r"__button__:(quiz:[^:]+:(?:correct|wrong):[^:]+)::(.+)",
+        message or "",
+        flags=re.DOTALL,
+    )
+
+    if not match:
+        return None
+
+    button_id = match.group(1)
+    title = match.group(2).strip()
+    parts = button_id.split(":", 3)
+    return {
+        "quiz_id": parts[1],
+        "is_correct": parts[2] == "correct",
+        "value": parts[3],
+        "title": title,
+    }
+
+
+def build_quiz_retry(quiz_id: str):
+    if quiz_id == "past_work":
+        return build_past_simple_work_quiz(
+            "Not quite. We need the Past Simple because the action happened yesterday. Try again."
+        )
+
+    return None
+
+
 def build_deterministic_guided_reply(student: StudentDB, answer: str, db: Session):
     lesson = get_current_lesson(student)
     stage = get_lesson_stage(student)
@@ -944,25 +989,25 @@ def build_deterministic_guided_reply(student: StudentDB, answer: str, db: Sessio
     language = normalize_language_preference(student.preferred_language)
 
     if language == "English" or looks_like_english_message(answer):
-        reply = (
+        explanation = (
             f"Great! \"{answer.strip()}\" is a correct Past Simple sentence.\n\n"
             "Studied is the past form of study. Because study ends in consonant + y, "
             "we change y to i and add -ed:\n\n"
             "study -> studied\n\n"
-            "We use the Past Simple for finished actions.\n\n"
-            "Now complete: Yesterday, I ___ (work) on a project."
+            "We use the Past Simple for finished actions."
         )
+        reply = build_past_simple_work_quiz(explanation)
     else:
-        reply = (
+        explanation = (
             f"Muito bem! \"{answer.strip()}\" e uma frase correta no Past Simple.\n\n"
             "Studied e o passado de study. Como study termina em consoante + y, "
             "trocamos y por i e acrescentamos -ed:\n\n"
             "study -> studied\n\n"
-            "Usamos o Past Simple para acoes que ja terminaram.\n\n"
-            "Agora complete: Yesterday, I ___ (work) on a project."
+            "Usamos o Past Simple para acoes que ja terminaram."
         )
+        reply = build_past_simple_work_quiz(explanation)
 
-    save_guided_exchange(student, answer, reply, db)
+    save_guided_exchange(student, answer, reply["body"], db)
     return reply
 
 
@@ -1715,6 +1760,60 @@ def send_whatsapp_message(phone: str, text: str):
     return response.json()
 
 
+def send_whatsapp_buttons(phone: str, body: str, buttons: list[dict]):
+    phone_number_id, access_token = get_meta_whatsapp_config()
+    recipient_phone = normalize_whatsapp_phone_for_send(phone)
+    url = f"https://graph.facebook.com/v23.0/{phone_number_id}/messages"
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "Content-Type": "application/json",
+    }
+    payload = {
+        "messaging_product": "whatsapp",
+        "to": recipient_phone,
+        "type": "interactive",
+        "interactive": {
+            "type": "button",
+            "body": {"text": body[:1024]},
+            "action": {
+                "buttons": [
+                    {
+                        "type": "reply",
+                        "reply": {
+                            "id": str(button["id"])[:256],
+                            "title": str(button["title"])[:20],
+                        },
+                    }
+                    for button in buttons[:3]
+                ]
+            },
+        },
+    }
+    response = requests.post(
+        url,
+        headers=headers,
+        json=payload,
+        timeout=20,
+    )
+
+    if response.status_code >= 400:
+        print("Erro ao enviar botoes pela Meta:", response.text)
+        try:
+            meta_error = response.json().get("error", {})
+            error_message = meta_error.get("message", "Erro desconhecido da Meta")
+            error_code = meta_error.get("code", response.status_code)
+        except ValueError:
+            error_message = response.text
+            error_code = response.status_code
+
+        raise HTTPException(
+            status_code=502,
+            detail=f"Erro ao enviar botoes pelo WhatsApp Cloud API: {error_code} - {error_message}",
+        )
+
+    return response.json()
+
+
 def send_whatsapp_video(
     phone: str,
     caption: str,
@@ -1790,12 +1889,20 @@ def send_whatsapp_reply(phone: str, reply):
         )
         return
 
+    if isinstance(reply, dict) and reply.get("type") == "buttons":
+        send_whatsapp_buttons(
+            phone=phone,
+            body=reply.get("body", ""),
+            buttons=reply.get("buttons", []),
+        )
+        return
+
     send_whatsapp_message(phone, str(reply))
 
 
 def get_reply_text(reply):
     if isinstance(reply, dict):
-        return reply.get("caption", "")
+        return reply.get("caption") or reply.get("body", "")
 
     return str(reply)
 
@@ -4469,6 +4576,15 @@ def recover_student_flow(student: StudentDB, db: Session):
 
 def process_whatsapp_message(phone: str, message: str, db: Session):
     student = get_or_create_whatsapp_student(phone, db)
+    quiz_answer = parse_quiz_button_message(message)
+
+    if quiz_answer:
+        message = quiz_answer["title"]
+
+        if not quiz_answer["is_correct"]:
+            retry = build_quiz_retry(quiz_answer["quiz_id"])
+            if retry:
+                return retry
 
     if student.current_stage != 0:
         student.last_activity = datetime.utcnow()
@@ -5003,6 +5119,14 @@ def process_whatsapp_message(phone: str, message: str, db: Session):
                 f"Student message: {message}"
             )
 
+        if quiz_answer and quiz_answer["is_correct"]:
+            question_for_ai = (
+                "[Internal instruction: the student selected the correct answer from an interactive "
+                f"exercise: {quiz_answer['title']!r}. Congratulate briefly, explain why it is correct "
+                "in one sentence, and continue with exactly one next step from the current guided lesson. "
+                "Do not enter BOT mode and do not repeat the same multiple-choice question.]"
+            )
+
     answer = generate_ai_answer(
         student=student,
         question=message,
@@ -5201,6 +5325,20 @@ async def receive_message(
 
         if message_type == "text":
             message = incoming_message.get("text", {}).get("body", "").strip()
+        elif message_type == "interactive":
+            interactive = incoming_message.get("interactive", {})
+            interactive_type = interactive.get("type")
+
+            if interactive_type == "button_reply":
+                button_reply = interactive.get("button_reply", {})
+                button_id = button_reply.get("id", "")
+                button_title = button_reply.get("title", "")
+                message = f"__button__:{button_id}::{button_title}"
+            elif interactive_type == "list_reply":
+                list_reply = interactive.get("list_reply", {})
+                message = list_reply.get("title", "").strip()
+            else:
+                message = ""
         elif message_type == "audio":
             media_id = incoming_message.get("audio", {}).get("id")
 
