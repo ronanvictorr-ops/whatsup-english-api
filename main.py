@@ -950,47 +950,57 @@ def save_guided_exchange(student: StudentDB, question: str, answer: str, db: Ses
     db.commit()
 
 
-def build_past_simple_work_quiz(prefix: str = ""):
+def get_quiz_interface_language(student: StudentDB, message: str = ""):
+    preference = normalize_language_preference(student.preferred_language)
+    if preference == "English" or looks_like_english_message(message):
+        return "en"
+    return "pt"
+
+
+def build_past_simple_work_quiz(prefix: str = "", language: str = "en"):
+    instruction = "Complete the sentence:" if language == "en" else "Complete a frase:"
     body = (
         f"{prefix}\n\n" if prefix else ""
-    ) + "Complete the sentence:\n\nYesterday, I ___ on a project."
+    ) + f"{instruction}\n\nYesterday, I ___ on a project."
     return {
         "type": "buttons",
         "body": body,
         "buttons": [
-            {"id": "quiz:past_work:wrong:work", "title": "work"},
-            {"id": "quiz:past_work:correct:worked", "title": "worked"},
-            {"id": "quiz:past_work:wrong:working", "title": "working"},
+            {"id": f"quiz:past_work_{language}:wrong:work", "title": "work"},
+            {"id": f"quiz:past_work_{language}:correct:worked", "title": "worked"},
+            {"id": f"quiz:past_work_{language}:wrong:working", "title": "working"},
         ],
     }
 
 
-def build_past_simple_travel_quiz(prefix: str = ""):
+def build_past_simple_travel_quiz(prefix: str = "", language: str = "en"):
+    instruction = "Complete the sentence:" if language == "en" else "Complete a frase:"
     body = (
         f"{prefix}\n\n" if prefix else ""
-    ) + "Complete the sentence:\n\nLast summer, I ___ to the beach."
+    ) + f"{instruction}\n\nLast summer, I ___ to the beach."
     return {
         "type": "buttons",
         "body": body,
         "buttons": [
-            {"id": "quiz:past_travel:wrong:travel", "title": "travel"},
-            {"id": "quiz:past_travel:correct:traveled", "title": "traveled"},
-            {"id": "quiz:past_travel:wrong:traveling", "title": "traveling"},
+            {"id": f"quiz:past_travel_{language}:wrong:travel", "title": "travel"},
+            {"id": f"quiz:past_travel_{language}:correct:traveled", "title": "traveled"},
+            {"id": f"quiz:past_travel_{language}:wrong:traveling", "title": "traveling"},
         ],
     }
 
 
-def build_past_simple_cook_quiz(prefix: str = ""):
+def build_past_simple_cook_quiz(prefix: str = "", language: str = "en"):
+    instruction = "Complete the sentence:" if language == "en" else "Complete a frase:"
     body = (
         f"{prefix}\n\n" if prefix else ""
-    ) + "Complete the sentence:\n\nHe ___ dinner yesterday."
+    ) + f"{instruction}\n\nHe ___ dinner yesterday."
     return {
         "type": "buttons",
         "body": body,
         "buttons": [
-            {"id": "quiz:past_cook:correct:cooked", "title": "cooked"},
-            {"id": "quiz:past_cook:wrong:cook", "title": "cook"},
-            {"id": "quiz:past_cook:wrong:cooking", "title": "cooking"},
+            {"id": f"quiz:past_cook_{language}:correct:cooked", "title": "cooked"},
+            {"id": f"quiz:past_cook_{language}:wrong:cook", "title": "cook"},
+            {"id": f"quiz:past_cook_{language}:wrong:cooking", "title": "cooking"},
         ],
     }
 
@@ -1017,41 +1027,80 @@ def parse_quiz_button_message(message: str):
 
 
 def build_quiz_retry(quiz_id: str):
-    if quiz_id == "past_work":
+    language = "pt" if quiz_id.endswith("_pt") else "en"
+    base_quiz_id = re.sub(r"_(?:pt|en)$", "", quiz_id)
+
+    if base_quiz_id == "past_work":
         return build_past_simple_work_quiz(
-            "Not quite. We need the Past Simple because the action happened yesterday. Try again."
+            (
+                "Not quite. We need the Past Simple because the action happened yesterday. Try again."
+                if language == "en"
+                else "Quase. Precisamos do Past Simple porque a acao aconteceu ontem. Tente novamente."
+            ),
+            language,
         )
 
-    if quiz_id == "past_travel":
+    if base_quiz_id == "past_travel":
         return build_past_simple_travel_quiz(
-            "Not quite. 'Last summer' shows a finished time in the past. Try again."
+            (
+                "Not quite. 'Last summer' shows a finished time in the past. Try again."
+                if language == "en"
+                else "Quase. 'Last summer' indica um momento concluido no passado. Tente novamente."
+            ),
+            language,
         )
 
-    if quiz_id == "past_cook":
+    if base_quiz_id == "past_cook":
         return build_past_simple_cook_quiz(
-            "Not quite. 'Yesterday' asks for the Past Simple. Try again."
+            (
+                "Not quite. 'Yesterday' asks for the Past Simple. Try again."
+                if language == "en"
+                else "Quase. 'Yesterday' pede o Past Simple. Tente novamente."
+            ),
+            language,
         )
 
     return None
 
 
 def build_quiz_correct_reply(quiz_id: str, student: StudentDB, db: Session):
+    language = "pt" if quiz_id.endswith("_pt") else "en"
+    base_quiz_id = re.sub(r"_(?:pt|en)$", "", quiz_id)
     student.xp = (student.xp or 0) + 2
     db.commit()
 
-    if quiz_id == "past_work":
+    if base_quiz_id == "past_work":
         return [
-            "Correct! Work is a regular verb: work -> worked.",
-            build_past_simple_travel_quiz("Question 2 of 3"),
+            (
+                "Correct! Work is a regular verb: work -> worked."
+                if language == "en"
+                else "Correto! Work e um verbo regular: work -> worked."
+            ),
+            build_past_simple_travel_quiz(
+                "Question 2 of 3" if language == "en" else "Pergunta 2 de 3",
+                language,
+            ),
         ]
 
-    if quiz_id == "past_travel":
+    if base_quiz_id == "past_travel":
         return [
-            "Correct! Travel is regular: travel -> traveled.",
-            build_past_simple_cook_quiz("Question 3 of 3"),
+            (
+                "Correct! Travel is regular: travel -> traveled."
+                if language == "en"
+                else "Correto! Travel e regular: travel -> traveled."
+            ),
+            build_past_simple_cook_quiz(
+                "Question 3 of 3" if language == "en" else "Pergunta 3 de 3",
+                language,
+            ),
         ]
 
-    if quiz_id == "past_cook":
+    if base_quiz_id == "past_cook":
+        if language == "pt":
+            return (
+                "Correto! Cook se transforma em cooked no Past Simple.\n\n"
+                "Quiz concluido: 3 perguntas respondidas. Agora escreva uma frase em ingles sobre o que voce fez ontem."
+            )
         return (
             "Correct! Cook becomes cooked in the Past Simple.\n\n"
             "Quiz finished: 3 questions completed. Now write one sentence about what you did yesterday."
@@ -1104,7 +1153,7 @@ def build_deterministic_guided_reply(student: StudentDB, answer: str, db: Sessio
             "study -> studied\n\n"
             "We use the Past Simple for finished actions."
         )
-        reply = build_past_simple_work_quiz(explanation)
+        reply = build_past_simple_work_quiz(explanation, "en")
     else:
         explanation = (
             f"Muito bem! \"{answer.strip()}\" e uma frase correta no Past Simple.\n\n"
@@ -1113,7 +1162,7 @@ def build_deterministic_guided_reply(student: StudentDB, answer: str, db: Sessio
             "study -> studied\n\n"
             "Usamos o Past Simple para acoes que ja terminaram."
         )
-        reply = build_past_simple_work_quiz(explanation)
+        reply = build_past_simple_work_quiz(explanation, "pt")
 
     save_guided_exchange(student, answer, reply["body"], db)
     return reply
@@ -5116,9 +5165,13 @@ def process_whatsapp_message(phone: str, message: str, db: Session):
             message,
             db,
         ):
-            return build_past_simple_work_quiz(
-                "Vamos praticar Past Simple. Escolha a resposta correta. Question 1 of 3"
+            quiz_language = get_quiz_interface_language(student, message)
+            intro = (
+                "Let's practice the Past Simple. Choose the correct answer. Question 1 of 3"
+                if quiz_language == "en"
+                else "Vamos praticar o Past Simple. Escolha a resposta correta. Pergunta 1 de 3"
             )
+            return build_past_simple_work_quiz(intro, quiz_language)
 
         if is_schedule_change_request(message):
             student.current_stage = 70
