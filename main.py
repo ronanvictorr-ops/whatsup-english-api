@@ -1092,6 +1092,29 @@ def looks_like_english_message(message: str):
     return any(marker in padded_text for marker in english_markers)
 
 
+def is_mixed_language_message(message: str):
+    normalized = normalize_intent_text(message)
+    tokens = set(re.findall(r"[a-z']+", normalized))
+
+    if len(tokens) < 2:
+        return False
+
+    portuguese_tokens = {
+        "eu", "voce", "nao", "sim", "ontem", "hoje", "amanha", "estou",
+        "sou", "fui", "era", "estudei", "trabalhei", "joguei", "gosto",
+        "quero", "tenho", "fiz", "com", "para", "porque", "mas", "meu",
+        "minha", "uma", "um", "aula", "ingles", "aprendendo",
+    }
+    english_tokens = {
+        "i", "you", "he", "she", "we", "they", "am", "is", "are", "was",
+        "were", "did", "do", "studied", "study", "worked", "work", "played",
+        "play", "went", "go", "like", "want", "have", "yesterday", "today",
+        "tomorrow", "english", "learning", "learn", "my", "the", "a", "an",
+    }
+
+    return bool(tokens & portuguese_tokens) and bool(tokens & english_tokens)
+
+
 def can_offer_full_english_mode(student):
     return (student.level or "").strip() in {"Advanced", "Fluent"}
 
@@ -2388,20 +2411,20 @@ def get_language_instruction(language: str, level: str = "Basic"):
     normalized_level = (level or "").strip().lower()
 
     if "fluent" in normalized_level or "fluente" in normalized_level or "c2" in normalized_level:
-        return "Use about 90% English and 10% Portuguese. Use Portuguese only if the student asks."
+        return "Mirror the student naturally. Prefer English and use Portuguese only when explicitly requested."
 
     if "advanced" in normalized_level or "avanc" in normalized_level or "c1" in normalized_level:
-        return "Use about 80% English and 20% Portuguese. Use Portuguese only to clarify difficult points."
+        return "Prefer English. If the student writes in English, answer only in English. Use brief Portuguese only for a requested clarification."
 
     if "upper" in normalized_level or "b2" in normalized_level:
-        return "Use about 70% English and 30% Portuguese. Keep explanations concise."
+        return "Use English for practice and concise Portuguese only when the student needs clarification. Never mix languages inside the same sentence."
 
     if "intermediate" in normalized_level or "a2" in normalized_level or "b1" in normalized_level:
-        return "Use about 50% English and 50% Portuguese. Increase English gradually when the student responds well."
+        return "Adapt turn by turn: English message gets an English reply; Portuguese message gets a brief Portuguese explanation plus one separate English example."
 
     return (
-        "Use about 30% to 40% English and 60% to 70% Portuguese. Use very simple "
-        "English words and short sentences. Do not force long English answers from beginners."
+        "Start with simple Portuguese guidance and introduce one short English phrase at a time. "
+        "If the student answers in English, reply in simple English. Never mix both languages inside one sentence."
     )
 
 
@@ -4940,6 +4963,22 @@ def process_whatsapp_message(phone: str, message: str, db: Session):
     lesson_was_completed = is_lesson_completed(student)
 
     if student.current_stage == 7:
+        if is_mixed_language_message(message):
+            return generate_ai_answer(
+                student=student,
+                question=message,
+                db=db,
+                ai_question=(
+                    "[Internal instruction: the student mixed Portuguese and English while answering "
+                    "the current guided exercise. Do not advance the lesson stage. Infer the intended "
+                    "English sentence and help reconstruct it. Reply naturally with: a brief encouraging "
+                    "sentence in Portuguese; a separate line beginning 'Em ingles:' with the complete "
+                    "English sentence; one short correction tip; and ask the student to write the complete "
+                    "English sentence again. Do not discuss the sentence topic as free chat. Ask no other question.]\n\n"
+                    f"Student's mixed sentence: {message}"
+                )
+            )
+
         update_lesson_engagement(student, db)
         db.commit()
 
