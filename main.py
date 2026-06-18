@@ -1005,6 +1005,79 @@ def build_past_simple_cook_quiz(prefix: str = "", language: str = "en"):
     }
 
 
+def build_past_simple_finish_quiz(prefix: str = "", language: str = "en"):
+    instruction = "Complete the sentence:" if language == "en" else "Complete a frase:"
+    body = (f"{prefix}\n\n" if prefix else "") + f"{instruction}\n\nThey ___ their homework last night."
+    return {
+        "type": "buttons",
+        "body": body,
+        "buttons": [
+            {"id": f"quiz:past_finish_{language}:wrong:finish", "title": "finish"},
+            {"id": f"quiz:past_finish_{language}:correct:finished", "title": "finished"},
+            {"id": f"quiz:past_finish_{language}:wrong:finishing", "title": "finishing"},
+        ],
+    }
+
+
+def build_past_simple_watch_quiz(prefix: str = "", language: str = "en"):
+    instruction = "Complete the sentence:" if language == "en" else "Complete a frase:"
+    body = (f"{prefix}\n\n" if prefix else "") + f"{instruction}\n\nWe ___ a movie yesterday."
+    return {
+        "type": "buttons",
+        "body": body,
+        "buttons": [
+            {"id": f"quiz:past_watch_{language}:wrong:watch", "title": "watch"},
+            {"id": f"quiz:past_watch_{language}:correct:watched", "title": "watched"},
+            {"id": f"quiz:past_watch_{language}:wrong:watching", "title": "watching"},
+        ],
+    }
+
+
+def build_past_simple_play_quiz(prefix: str = "", language: str = "en"):
+    instruction = "Complete the sentence:" if language == "en" else "Complete a frase:"
+    body = (f"{prefix}\n\n" if prefix else "") + f"{instruction}\n\nShe ___ soccer on Saturday."
+    return {
+        "type": "buttons",
+        "body": body,
+        "buttons": [
+            {"id": f"quiz:past_play_{language}:wrong:play", "title": "play"},
+            {"id": f"quiz:past_play_{language}:correct:played", "title": "played"},
+            {"id": f"quiz:past_play_{language}:wrong:playing", "title": "playing"},
+        ],
+    }
+
+
+def build_practice_mode_choice(language: str = "pt"):
+    if language == "en":
+        body = "We have completed a good number of quizzes. Would you like to practice writing now?"
+        writing_title = "Practice writing"
+        quiz_title = "More quizzes"
+    else:
+        body = "Ja fizemos uma quantidade significativa de quizzes. Vamos praticar escrita agora?"
+        writing_title = "Praticar escrita"
+        quiz_title = "Mais quizzes"
+
+    return {
+        "type": "buttons",
+        "body": body,
+        "buttons": [
+            {"id": f"practice:writing:{language}", "title": writing_title},
+            {"id": f"practice:more_quiz:{language}", "title": quiz_title},
+        ],
+    }
+
+
+def parse_practice_button_message(message: str):
+    match = re.fullmatch(
+        r"__button__:practice:(writing|more_quiz):(pt|en)::(.+)",
+        message or "",
+        flags=re.DOTALL,
+    )
+    if not match:
+        return None
+    return {"choice": match.group(1), "language": match.group(2)}
+
+
 def parse_quiz_button_message(message: str):
     match = re.fullmatch(
         r"__button__:(quiz:[^:]+:(?:correct|wrong):[^:]+)::(.+)",
@@ -1060,6 +1133,30 @@ def build_quiz_retry(quiz_id: str):
             language,
         )
 
+    if base_quiz_id == "past_finish":
+        return build_past_simple_finish_quiz(
+            "Not quite. 'Last night' asks for the Past Simple. Try again."
+            if language == "en"
+            else "Quase. 'Last night' pede o Past Simple. Tente novamente.",
+            language,
+        )
+
+    if base_quiz_id == "past_watch":
+        return build_past_simple_watch_quiz(
+            "Not quite. The action finished yesterday. Try again."
+            if language == "en"
+            else "Quase. A acao terminou ontem. Tente novamente.",
+            language,
+        )
+
+    if base_quiz_id == "past_play":
+        return build_past_simple_play_quiz(
+            "Not quite. Saturday is a finished past time here. Try again."
+            if language == "en"
+            else "Quase. Aqui, Saturday indica um momento concluido no passado. Tente novamente.",
+            language,
+        )
+
     return None
 
 
@@ -1096,17 +1193,68 @@ def build_quiz_correct_reply(quiz_id: str, student: StudentDB, db: Session):
         ]
 
     if base_quiz_id == "past_cook":
-        if language == "pt":
-            return (
-                "Correto! Cook se transforma em cooked no Past Simple.\n\n"
-                "Quiz concluido: 3 perguntas respondidas. Agora escreva uma frase em ingles sobre o que voce fez ontem."
-            )
-        return (
-            "Correct! Cook becomes cooked in the Past Simple.\n\n"
-            "Quiz finished: 3 questions completed. Now write one sentence about what you did yesterday."
-        )
+        return [
+            "Correct! Cook becomes cooked in the Past Simple."
+            if language == "en"
+            else "Correto! Cook se transforma em cooked no Past Simple.",
+            build_practice_mode_choice(language),
+        ]
+
+    if base_quiz_id == "past_finish":
+        return [
+            "Correct! Finish becomes finished."
+            if language == "en"
+            else "Correto! Finish se transforma em finished.",
+            build_past_simple_watch_quiz(
+                "Question 2 of 3" if language == "en" else "Pergunta 2 de 3",
+                language,
+            ),
+        ]
+
+    if base_quiz_id == "past_watch":
+        return [
+            "Correct! Watch becomes watched."
+            if language == "en"
+            else "Correto! Watch se transforma em watched.",
+            build_past_simple_play_quiz(
+                "Question 3 of 3" if language == "en" else "Pergunta 3 de 3",
+                language,
+            ),
+        ]
+
+    if base_quiz_id == "past_play":
+        return [
+            "Correct! Play becomes played."
+            if language == "en"
+            else "Correto! Play se transforma em played.",
+            build_practice_mode_choice(language),
+        ]
 
     return "Correct!"
+
+
+def generate_writing_practice_feedback(student: StudentDB, message: str, db: Session):
+    language = normalize_language_preference(student.preferred_language)
+    response_language = "English" if language == "English" or looks_like_english_message(message) else "Portuguese"
+    client = get_openai_client()
+    response = client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=[
+            {
+                "role": "system",
+                "content": (
+                    "You are WINGO correcting a short Past Simple writing exercise. "
+                    f"Reply in {response_language}. First show the corrected English sentence, "
+                    "then explain one important correction briefly, and ask for one new Past Simple "
+                    "sentence about yesterday. Do not change topics and do not use multiple choice."
+                ),
+            },
+            {"role": "user", "content": message},
+        ],
+    )
+    answer = response.choices[0].message.content.strip()
+    save_guided_exchange(student, message, answer, db)
+    return answer
 
 
 def has_recent_past_simple_context(student: StudentDB, message: str, db: Session):
@@ -4443,6 +4591,9 @@ def get_learning_mode_label(student: StudentDB):
     if student.current_stage == 83:
         return "revisao antes da aula"
 
+    if student.current_stage == 84:
+        return "pratica de escrita"
+
     return "conversa"
 
 
@@ -4733,6 +4884,21 @@ def recover_student_flow(student: StudentDB, db: Session):
 
 def process_whatsapp_message(phone: str, message: str, db: Session):
     student = get_or_create_whatsapp_student(phone, db)
+    practice_choice = parse_practice_button_message(message)
+
+    if practice_choice:
+        if practice_choice["choice"] == "writing":
+            student.current_stage = 84
+            db.commit()
+            if practice_choice["language"] == "en":
+                return "Great. Write two short sentences about what you did yesterday."
+            return "Otimo. Escreva duas frases curtas em ingles sobre o que voce fez ontem."
+
+        student.current_stage = 7
+        db.commit()
+        prefix = "New quiz block - Question 1 of 3" if practice_choice["language"] == "en" else "Novo bloco de quizzes - Pergunta 1 de 3"
+        return build_past_simple_finish_quiz(prefix, practice_choice["language"])
+
     quiz_answer = parse_quiz_button_message(message)
 
     if quiz_answer:
@@ -4780,7 +4946,7 @@ def process_whatsapp_message(phone: str, message: str, db: Session):
     db.commit()
 
     if (
-        student.current_stage not in {0, 2, 3, 35, 4, 5, 6, 50, 51, 52, 53, 54, 70, 80, 81, 82, 83, 999}
+        student.current_stage not in {0, 2, 3, 35, 4, 5, 6, 50, 51, 52, 53, 54, 70, 80, 81, 82, 83, 84, 999}
         and is_level_retest_request(message)
     ):
         student.assessment_completed = "No"
@@ -5147,6 +5313,16 @@ def process_whatsapp_message(phone: str, message: str, db: Session):
             "Boa! Revisao concluida. Agora vamos para o conteudo novo de hoje.",
             *build_lesson_opening_replies(student, db),
         ]
+
+    if student.current_stage == 84:
+        if is_exercise_request(message):
+            student.current_stage = 7
+            db.commit()
+            language = get_quiz_interface_language(student, message)
+            prefix = "New quiz block - Question 1 of 3" if language == "en" else "Novo bloco de quizzes - Pergunta 1 de 3"
+            return build_past_simple_finish_quiz(prefix, language)
+
+        return generate_writing_practice_feedback(student, message, db)
 
     if student.current_stage == 7:
         requested_language = detect_language_switch_request(message)
