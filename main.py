@@ -499,6 +499,11 @@ def is_lesson_start_request(message: str):
             r"\bpodemos (?:comecar|iniciar|antecipar).*aula\b",
             r"\bquero (?:comecar|iniciar|antecipar).*aula\b",
             r"\baula agora\b",
+            r"\b(?:seguir|segue|continue|continuar|retomar).*aula guiada\b",
+            r"\baula guiada\b",
+            r"\bvamos (?:seguir|continuar).*aula\b",
+            r"^guiada$",
+            r"^guiana$",
             r"^agora$",
         ]
     )
@@ -850,8 +855,75 @@ def update_lesson_engagement(student: StudentDB, db: Session = None):
         mark_lesson_completed(student, db)
         return
 
-    if (student.messages_in_current_lesson or 0) > 1:
+    if (student.messages_in_current_lesson or 0) >= 1:
         advance_lesson_stage(student)
+
+
+def get_recent_relevant_lesson_answer(student: StudentDB, db: Session):
+    conversations = (
+        db.query(ConversationDB)
+        .filter(ConversationDB.student_id == student.id)
+        .order_by(ConversationDB.id.desc())
+        .limit(12)
+        .all()
+    )
+
+    fallback = None
+
+    for conversation in conversations:
+        candidate = (conversation.question or "").strip()
+
+        if not candidate or is_lesson_start_request(candidate):
+            continue
+
+        if is_lesson_schedule_question(candidate) or is_schedule_change_request(candidate):
+            continue
+
+        if normalize_intent_text(candidate) in {"sim", "nao", "ok", "okay", "agora"}:
+            continue
+
+        if looks_like_english_message(candidate):
+            return candidate
+
+        if fallback is None:
+            fallback = candidate
+
+    return fallback
+
+
+def resume_stuck_guided_lesson(student: StudentDB, message: str, db: Session):
+    active_session = get_active_lesson_session(student, db)
+
+    if not active_session:
+        return None
+
+    previous_answer = get_recent_relevant_lesson_answer(student, db)
+    student.current_stage = 7
+
+    if is_lesson_completed(student):
+        student.lesson_stage = "short_explanation" if previous_answer else "context_question"
+        student.messages_in_current_lesson = 1 if previous_answer else 0
+
+    db.commit()
+
+    if not previous_answer:
+        return build_lesson_opening_replies(student, db)
+
+    lesson = get_current_lesson(student)
+    return generate_ai_answer(
+        student=student,
+        question=message,
+        db=db,
+        ai_question=(
+            "[Internal instruction: recover the active guided lesson now. "
+            f"The current topic is {lesson['title']}. "
+            f"The student's last relevant lesson answer was: {previous_answer!r}. "
+            "Use that exact answer as the bridge: acknowledge or correct it, explain the next small point, "
+            "and ask exactly one exercise from the current structured lesson. "
+            "Do not discuss the answer's subject as free chat. Do not enter BOT mode. "
+            "Follow the student's stored language preference.]"
+        )
+    )
 
 def get_onboarding_notes(student: StudentDB):
     try:
@@ -3240,13 +3312,18 @@ def generate_weekly_lesson(student: StudentDB, db: Session):
     lesson_context = get_lesson_context(student)
     interests = getattr(student, "interests", None) or "not informed yet"
     lesson_stage = get_lesson_stage(student)
+    level = getattr(student, "level", None) or "Basic"
+    language = normalize_language_preference(
+        getattr(student, "preferred_language", None) or "Portuguese"
+    )
+    language_instruction = get_language_instruction(language, level)
 
     response = client.chat.completions.create(
         model="gpt-4o-mini",
         messages=[
             {
                 "role": "system",
-                "content": """
+                "content": f"""
 Create one short personalized English mini-lesson for WhatsApp.
 
 Rules:
@@ -3266,6 +3343,9 @@ Rules:
 - Prefer text practice.
 - Do not ask for audio or voice notes in this first lesson message.
 - Do not use emojis.
+- Language preference: {language}.
+- Mandatory language rule: {language_instruction}
+- Keep this same language choice throughout the guided lesson. Do not switch languages unexpectedly.
 """
             },
             {
@@ -4172,7 +4252,10 @@ def handle_control_command(student: StudentDB, message: str, db: Session):
         )
 
     if command == "resume":
-        if get_student_lesson_schedule(student):
+        if (
+            getattr(student, "schedule_completed", "No") == "Paused"
+            and get_student_lesson_schedule(student)
+        ):
             student.schedule_completed = "Yes"
             student.current_stage = 7
             db.commit()
@@ -4181,9 +4264,12 @@ def handle_control_command(student: StudentDB, message: str, db: Session):
                 "Quando quiser uma revisao agora, mande: revisar aula."
             )
 
-        student.current_stage = 70
-        db.commit()
-        return "Combinado. Qual horario voce prefere para receber sua aula diaria?"
+        if getattr(student, "schedule_completed", "No") == "Paused":
+            student.current_stage = 70
+            db.commit()
+            return "Combinado. Qual horario voce prefere para receber sua aula diaria?"
+
+        return None
 
     if command == "support":
         return (
@@ -4705,6 +4791,12 @@ def process_whatsapp_message(phone: str, message: str, db: Session):
                 "Se quiser antecipar a aula de hoje, pode dizer: vamos para nossa aula agora."
             )
         return "Voce ainda nao definiu um horario. Me diga que horas prefere receber sua aula diaria."
+
+    if student.current_stage == 7 and is_lesson_start_request(message):
+        resumed_answer = resume_stuck_guided_lesson(student, message, db)
+
+        if resumed_answer is not None:
+            return resumed_answer
 
     if student.current_stage == 7 and is_lesson_completed(student):
         if is_lesson_start_request(message):
