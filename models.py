@@ -3,6 +3,7 @@ from datetime import datetime
 from sqlalchemy import (
     Column,
     DateTime,
+    Float,
     ForeignKey,
     Integer,
     String,
@@ -98,6 +99,8 @@ class StudentDB(Base):
         Integer,
         default=0
     )
+
+    canonical_state = Column(String)
 
     last_activity = Column(
         DateTime,
@@ -359,7 +362,61 @@ class ProcessedWebhookMessageDB(Base):
 
     phone = Column(String)
 
+    status = Column(String, default="processing")
+
+    attempts = Column(Integer, default=1)
+
+    last_error = Column(Text)
+
+    completed_at = Column(DateTime)
+
     created_at = Column(
         DateTime,
         default=datetime.utcnow
     )
+
+
+class StateTransitionDB(Base):
+    __tablename__ = "state_transitions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    student_id = Column(Integer, ForeignKey("students.id"), index=True)
+    message_id = Column(String, index=True)
+    previous_state = Column(String, nullable=False)
+    next_state = Column(String, nullable=False)
+    flow = Column(String)
+    decision = Column(String)
+    message_excerpt = Column(Text)
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+
+
+class OutboundDeliveryDB(Base):
+    __tablename__ = "outbound_deliveries"
+
+    id = Column(Integer, primary_key=True, index=True)
+    idempotency_key = Column(String, unique=True, index=True, nullable=False)
+    phone = Column(String, index=True)
+    message_type = Column(String)
+    payload_excerpt = Column(Text)
+    status = Column(String, default="pending", index=True)
+    attempts = Column(Integer, default=0)
+    meta_message_id = Column(String)
+    last_error = Column(Text)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    completed_at = Column(DateTime)
+
+
+class OperationalMetricDB(Base):
+    __tablename__ = "operational_metrics"
+
+    id = Column(Integer, primary_key=True, index=True)
+    service = Column(String, index=True)
+    operation = Column(String, index=True)
+    status = Column(String, index=True)
+    latency_ms = Column(Float, default=0)
+    attempts = Column(Integer, default=1)
+    input_tokens = Column(Integer, default=0)
+    output_tokens = Column(Integer, default=0)
+    estimated_cost_usd = Column(Float, default=0)
+    error_type = Column(String)
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)

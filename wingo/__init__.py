@@ -1,0 +1,1 @@
+"""WINGO domain services."""

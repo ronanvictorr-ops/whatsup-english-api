@@ -1,0 +1,191 @@
+import asyncio
+import unittest
+from datetime import datetime, timedelta
+from unittest.mock import patch
+
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+
+import main
+from database import Base
+from models import (
+    OutboundDeliveryDB,
+    ProcessedWebhookMessageDB,
+    StudentDB,
+)
+
+
+class FakeRequest:
+    def __init__(self, payload):
+        self.payload = payload
+
+    async def json(self):
+        return self.payload
+
+
+def text_payload(message_id="wamid.1", text="hello"):
+    return {
+        "entry": [
+            {
+                "changes": [
+                    {
+                        "value": {
+                            "messages": [
+                                {
+                                    "id": message_id,
+                                    "from": "5511999999999",
+                                    "type": "text",
+                                    "text": {"body": text},
+                                }
+                            ]
+                        }
+                    }
+                ]
+            }
+        ]
+    }
+
+
+class WebhookIntegrationTests(unittest.TestCase):
+    def setUp(self):
+        self.engine = create_engine("sqlite:///:memory:")
+        Base.metadata.create_all(self.engine)
+        self.Session = sessionmaker(bind=self.engine)
+        self.db = self.Session()
+        self.sent = []
+        self.process_calls = 0
+
+        student = StudentDB(
+            phone="5511999999999",
+            email="5511999999999@whatsapp.local",
+            password="test",
+            name="Test Student",
+            learning_goal="Conversation",
+            interests="travel",
+            current_stage=0,
+            current_lesson=1,
+            lesson_stage="context_question",
+            messages_in_current_lesson=0,
+            xp=0,
+        )
+        self.db.add(student)
+        self.db.commit()
+
+        self.patches = [
+            patch.object(main, "record_metric"),
+            patch.object(main, "mark_student_audio_request_if_needed"),
+            patch.object(main, "send_pronunciation_audio_if_needed"),
+        ]
+        for active_patch in self.patches:
+            active_patch.start()
+
+    def tearDown(self):
+        for active_patch in reversed(self.patches):
+            active_patch.stop()
+        self.db.close()
+        self.engine.dispose()
+
+    def process(self, phone, message, db):
+        self.process_calls += 1
+        student = db.query(StudentDB).filter(StudentDB.phone == phone).one()
+        student.current_stage = 2
+        db.commit()
+        return "first reply"
+
+    def sender(self, phone, reply):
+        self.sent.append((phone, reply))
+        return {"messages": [{"id": f"meta-{len(self.sent)}"}]}
+
+    def receive(self, payload):
+        return asyncio.run(main.receive_message(FakeRequest(payload), self.db))
+
+    def test_duplicate_webhook_processes_and_sends_once(self):
+        payload = text_payload()
+        with patch.object(main, "process_whatsapp_message", side_effect=self.process), patch.object(
+            main, "send_whatsapp_reply", side_effect=self.sender
+        ):
+            self.receive(payload)
+            self.receive(payload)
+
+        self.assertEqual(self.process_calls, 1)
+        self.assertEqual(len(self.sent), 1)
+        inbound = self.db.query(ProcessedWebhookMessageDB).one()
+        self.assertEqual(inbound.status, "completed")
+
+    def test_multiple_replies_have_independent_delivery_keys(self):
+        with patch.object(
+            main,
+            "process_whatsapp_message",
+            return_value=["first reply", "second reply"],
+        ), patch.object(main, "send_whatsapp_reply", side_effect=self.sender):
+            self.receive(text_payload(message_id="wamid.multi"))
+
+        deliveries = self.db.query(OutboundDeliveryDB).order_by(OutboundDeliveryDB.id).all()
+        self.assertEqual(len(self.sent), 2)
+        self.assertEqual(
+            [item.idempotency_key for item in deliveries],
+            ["wamid.multi:0", "wamid.multi:1"],
+        )
+        self.assertTrue(all(item.status == "sent" for item in deliveries))
+
+    def test_delivery_failure_restores_state_and_retry_completes(self):
+        send_attempts = 0
+
+        def flaky_sender(phone, reply):
+            nonlocal send_attempts
+            send_attempts += 1
+            if send_attempts == 1:
+                raise RuntimeError("Meta unavailable")
+            return {"messages": [{"id": "meta-recovered"}]}
+
+        payload = text_payload(message_id="wamid.retry")
+        with patch.object(main, "process_whatsapp_message", side_effect=self.process), patch.object(
+            main, "send_whatsapp_reply", side_effect=flaky_sender
+        ):
+            self.receive(payload)
+            student = self.db.query(StudentDB).one()
+            inbound = self.db.query(ProcessedWebhookMessageDB).one()
+            self.assertEqual(student.current_stage, 0)
+            self.assertEqual(inbound.status, "failed")
+
+            self.receive(payload)
+
+        student = self.db.query(StudentDB).one()
+        inbound = self.db.query(ProcessedWebhookMessageDB).one()
+        delivery = self.db.query(OutboundDeliveryDB).one()
+        self.assertEqual(student.current_stage, 2)
+        self.assertEqual(inbound.status, "completed")
+        self.assertEqual(inbound.attempts, 2)
+        self.assertEqual(delivery.status, "sent")
+        self.assertEqual(delivery.attempts, 2)
+        self.assertEqual(send_attempts, 2)
+
+    def test_health_reports_stuck_processing_and_sending(self):
+        stale = datetime.utcnow() - timedelta(minutes=10)
+        self.db.add(
+            ProcessedWebhookMessageDB(
+                message_id="stuck-inbound",
+                phone="5511",
+                status="processing",
+                created_at=stale,
+            )
+        )
+        self.db.add(
+            OutboundDeliveryDB(
+                idempotency_key="stuck-outbound",
+                phone="5511",
+                status="sending",
+                created_at=stale,
+            )
+        )
+        self.db.commit()
+
+        health = main.operational_health(self.db)
+
+        self.assertEqual(health["status"], "degraded")
+        self.assertEqual(health["stuck_inbound_messages"], 1)
+        self.assertEqual(health["stuck_outbound_deliveries"], 1)
+
+
+if __name__ == "__main__":
+    unittest.main()

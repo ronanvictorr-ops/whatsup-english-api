@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#0757d9">
+  <title>WhatsUp English | Painel de aprendizagem</title>
+  <link rel="stylesheet" href="/dashboard-assets/styles.css">
+</head>
+<body data-view="authView">
+  <div class="ambient ambient-one"></div>
+  <div class="ambient ambient-two"></div>
+  <header class="topbar">
+    <a class="brand" href="/dashboard" aria-label="WhatsUp English inicio">
+      <img class="brand-logo" src="/dashboard-assets/whatsup-english-logo.jpg" alt="WhatsUp English">
+    </a>
+    <div class="topbar-actions">
+      <span id="connectionStatus" class="status-pill"><i></i> Conectando</span>
+      <button id="logoutButton" class="button ghost hidden" type="button">Sair</button>
+    </div>
+  </header>
+
+  <main class="shell">
+    <section id="authView" class="auth-layout">
+      <div class="hero-copy">
+        <span class="eyebrow">Inglês pelo WhatsApp com IA</span>
+        <h1><span>No seu ritmo.</span><br><em>Pelo WhatsApp,</em><br><b>com IA.</b></h1>
+        <p>Veja suas aulas, conquistas e próximos passos com a ajuda do Wingo, seu professor virtual.</p>
+        <div class="hero-proof">
+          <div><strong>10 min</strong><span>aulas rápidas</span></div>
+          <div><strong>1 passo</strong><span>por dia</span></div>
+          <div><strong>IA</strong><span>correção inteligente</span></div>
+        </div>
+        <img class="hero-mascot" src="/dashboard-assets/wingo-mascot.png" alt="Wingo, professor virtual de inglês">
+        <div class="trust-row">
+          <div class="student-trust"><span class="avatar avatar-one">A</span><span class="avatar avatar-two">M</span><span class="avatar avatar-three">J</span><p><strong>Mais de 50 mil alunos</strong><span class="stars">★★★★★ <b>4,9/5</b></span></p></div>
+          <div class="privacy-trust"><span class="shield">✓</span><p><strong>Privacidade e segurança</strong><small>Seus dados protegidos</small></p></div>
+        </div>
+      </div>
+
+      <div class="auth-card">
+        <div class="role-tabs" role="tablist">
+          <button class="role-tab active" data-role="student" type="button">Sou aluno</button>
+          <button class="role-tab" data-role="teacher" type="button">Sou professor</button>
+        </div>
+        <form id="studentLogin" class="auth-form">
+          <div class="form-heading"><span>01</span><div><h2>Bem-vindo de volta</h2><p>Entre para ver sua jornada.</p></div></div>
+          <label>Email<input id="studentEmail" type="email" autocomplete="email" placeholder="voce@email.com" required></label>
+          <label>Senha<input id="studentPassword" type="password" autocomplete="current-password" placeholder="Sua senha" required></label>
+          <a class="forgot-link" href="mailto:contato@whatsupenglish.com.br?subject=Recuperar senha">Esqueci minha senha</a>
+          <button class="button primary" type="submit">Abrir meu painel <span>→</span></button>
+        </form>
+        <form id="teacherLogin" class="auth-form hidden">
+          <div class="form-heading"><span>02</span><div><h2>Visão do professor</h2><p>Acesso protegido à turma e operação.</p></div></div>
+          <label>Chave administrativa<input id="adminKey" type="password" autocomplete="off" placeholder="DASHBOARD_ADMIN_TOKEN" required></label>
+          <button class="button primary" type="submit">Abrir painel da turma <span>→</span></button>
+        </form>
+        <p id="authError" class="form-error" role="alert"></p>
+      </div>
+    </section>
+
+    <section id="studentView" class="dashboard hidden">
+      <div class="page-heading">
+        <div><span class="eyebrow">Painel do aluno</span><h1>Olá, <span id="studentName">aluno</span>.</h1><p id="studentSubtitle">Aqui está o seu próximo passo.</p></div>
+        <div class="level-badge"><small>Nível atual</small><strong id="studentLevel">—</strong></div>
+      </div>
+      <div id="studentStats" class="stats-grid"></div>
+      <div class="content-grid">
+        <article class="panel lesson-panel">
+          <div class="panel-kicker">Agora</div><h2 id="currentLesson">Sua aula</h2>
+          <p id="lessonStage">Preparando próximo passo...</p>
+          <div class="progress-track"><span id="lessonProgress"></span></div>
+          <div class="lesson-meta"><span id="studentSchedule">Agenda não definida</span><span id="learningMode">Modo guiado</span></div>
+        </article>
+        <article class="panel"><div class="panel-header"><div><span class="panel-kicker">Memória pedagógica</span><h2>Aprendizados recentes</h2></div></div><div id="learningRecords" class="record-list"></div></article>
+      </div>
+    </section>
+
+    <section id="teacherView" class="dashboard hidden">
+      <div class="page-heading">
+        <div><span class="eyebrow">Painel do professor</span><h1>Visão da turma.</h1><p>Ritmo pedagógico e operação, sem ruído.</p></div>
+        <button id="refreshTeacher" class="button secondary" type="button">Atualizar dados</button>
+      </div>
+      <div id="teacherStats" class="stats-grid"></div>
+      <div class="teacher-grid">
+        <article class="panel students-panel">
+          <div class="panel-header"><div><span class="panel-kicker">Alunos</span><h2>Jornada da turma</h2></div><input id="studentSearch" class="search" type="search" placeholder="Buscar aluno"></div>
+          <div class="table-wrap"><table><thead><tr><th>Aluno</th><th>Nível</th><th>Momento</th><th>Aula</th><th>XP</th><th>Atividade</th></tr></thead><tbody id="studentsTable"></tbody></table></div>
+        </article>
+        <aside class="side-stack">
+          <article class="panel health-panel"><div class="panel-header"><div><span class="panel-kicker">Operação</span><h2>Saúde do sistema</h2></div><span id="healthBadge" class="health-badge">—</span></div><div id="healthMetrics" class="health-list"></div></article>
+          <article class="panel"><div class="panel-header"><div><span class="panel-kicker">Auditoria</span><h2>Transições recentes</h2></div></div><div id="transitionList" class="transition-list"></div></article>
+        </aside>
+      </div>
+    </section>
+  </main>
+  <script src="/dashboard-assets/app.js" defer></script>
+</body>
+</html>

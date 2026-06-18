@@ -2,8 +2,10 @@ import asyncio
 import json
 import os
 import re
+import secrets
 import tempfile
 import unicodedata
+from time import perf_counter
 from datetime import datetime, timedelta, timezone
 from difflib import SequenceMatcher
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -14,17 +16,20 @@ from dotenv import load_dotenv
 from fastapi import (
     Depends,
     FastAPI,
+    Header,
     HTTPException,
     Query,
     Request,
     Response,
 )
+from fastapi.responses import FileResponse
 from fastapi.security import OAuth2PasswordBearer
+from fastapi.staticfiles import StaticFiles
 from jose import JWTError, jwt
 from openai import OpenAI
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
-from sqlalchemy import text
+from sqlalchemy import func, text
 
 from database import Base, SessionLocal, engine
 from pedagogy import (
@@ -41,10 +46,29 @@ from models import (
     ConversationDB,
     LearningRecordDB,
     LessonSessionDB,
+    OperationalMetricDB,
+    OutboundDeliveryDB,
     ProcessedWebhookMessageDB,
     ProgressDB,
     StudentDB,
+    StateTransitionDB,
 )
+from wingo.flows.router import resolve_flow
+from wingo.states import (
+    ConversationState,
+    infer_recovery_state,
+    restore_student,
+    snapshot_student,
+    state_name,
+)
+from wingo.observability import audit_transition, log_event, record_metric
+from wingo.idempotency import (
+    claim_inbound_message,
+    complete_inbound_message,
+    fail_inbound_message,
+    send_reply_once,
+)
+from wingo.retries import call_with_retry, http_get_with_retry, http_post_with_retry
 
 
 
@@ -62,6 +86,11 @@ def ensure_runtime_columns():
     with engine.begin() as connection:
         if engine.dialect.name != "sqlite":
             runtime_statements = [
+                "ALTER TABLE students ADD COLUMN IF NOT EXISTS canonical_state VARCHAR",
+                "ALTER TABLE processed_webhook_messages ADD COLUMN IF NOT EXISTS status VARCHAR DEFAULT 'processing'",
+                "ALTER TABLE processed_webhook_messages ADD COLUMN IF NOT EXISTS attempts INTEGER DEFAULT 1",
+                "ALTER TABLE processed_webhook_messages ADD COLUMN IF NOT EXISTS last_error TEXT",
+                "ALTER TABLE processed_webhook_messages ADD COLUMN IF NOT EXISTS completed_at TIMESTAMP",
                 "ALTER TABLE students ADD COLUMN IF NOT EXISTS last_weekly_report_week VARCHAR",
                 "ALTER TABLE lesson_sessions ADD COLUMN IF NOT EXISTS feedback_rating INTEGER",
                 "ALTER TABLE lesson_sessions ADD COLUMN IF NOT EXISTS feedback_text TEXT",
@@ -86,12 +115,33 @@ def ensure_runtime_columns():
             "messages_in_current_lesson": "INTEGER DEFAULT 0",
             "last_lesson_date": "TEXT",
             "last_weekly_report_week": "TEXT",
+            "canonical_state": "TEXT",
         }
 
         for column_name, definition in runtime_columns.items():
             if column_name not in column_names:
                 connection.execute(
                     text(f"ALTER TABLE students ADD COLUMN {column_name} {definition}")
+                )
+
+        processed_columns = connection.execute(
+            text("PRAGMA table_info(processed_webhook_messages)")
+        ).fetchall()
+        processed_column_names = {column[1] for column in processed_columns}
+        processed_runtime_columns = {
+            "status": "TEXT DEFAULT 'processing'",
+            "attempts": "INTEGER DEFAULT 1",
+            "last_error": "TEXT",
+            "completed_at": "DATETIME",
+        }
+
+        for column_name, definition in processed_runtime_columns.items():
+            if column_name not in processed_column_names:
+                connection.execute(
+                    text(
+                        f"ALTER TABLE processed_webhook_messages "
+                        f"ADD COLUMN {column_name} {definition}"
+                    )
                 )
 
         lesson_columns = connection.execute(
@@ -115,6 +165,19 @@ def ensure_runtime_columns():
 ensure_runtime_columns()
 
 app = FastAPI()
+
+DASHBOARD_DIR = Path(__file__).resolve().parent / "dashboard"
+SALES_DIR = Path(__file__).resolve().parent / "sales"
+app.mount(
+    "/dashboard-assets",
+    StaticFiles(directory=DASHBOARD_DIR),
+    name="dashboard-assets",
+)
+app.mount(
+    "/sales-assets",
+    StaticFiles(directory=SALES_DIR),
+    name="sales-assets",
+)
 
 SECRET_KEY = os.getenv("SECRET_KEY", "whatsup-english-secret-key")
 ALGORITHM = "HS256"
@@ -884,7 +947,7 @@ def build_next_lesson_preview(
 
     try:
         client = get_openai_client()
-        response = client.chat.completions.create(
+        response = call_with_retry(client.chat.completions.create, operation="chat_completion",
             model="gpt-4o-mini",
             messages=[
                 {
@@ -1321,7 +1384,7 @@ def generate_writing_practice_feedback(student: StudentDB, message: str, db: Ses
     language = normalize_language_preference(student.preferred_language)
     response_language = "English" if language == "English" or looks_like_english_message(message) else "Portuguese"
     client = get_openai_client()
-    response = client.chat.completions.create(
+    response = call_with_retry(client.chat.completions.create, operation="chat_completion",
         model="gpt-4o-mini",
         messages=[
             {
@@ -1831,7 +1894,7 @@ def evaluate_placement_test(student: StudentDB):
     client = get_openai_client()
     notes = get_onboarding_notes(student)
 
-    response = client.chat.completions.create(
+    response = call_with_retry(client.chat.completions.create, operation="chat_completion",
         model="gpt-4o-mini",
         messages=[
             {
@@ -1870,7 +1933,7 @@ def evaluate_placement_test_details(student: StudentDB):
     client = get_openai_client()
     notes = get_onboarding_notes(student)
 
-    response = client.chat.completions.create(
+    response = call_with_retry(client.chat.completions.create, operation="chat_completion",
         model="gpt-4o-mini",
         messages=[
             {
@@ -2121,7 +2184,7 @@ def send_whatsapp_message(phone: str, text: str):
         }
     }
 
-    response = requests.post(
+    response = http_post_with_retry(
         url,
         headers=headers,
         json=payload,
@@ -2178,7 +2241,7 @@ def send_whatsapp_buttons(phone: str, body: str, buttons: list[dict]):
             },
         },
     }
-    response = requests.post(
+    response = http_post_with_retry(
         url,
         headers=headers,
         json=payload,
@@ -2240,7 +2303,7 @@ def send_whatsapp_video(
         "video": video_payload
     }
 
-    response = requests.post(
+    response = http_post_with_retry(
         url,
         headers=headers,
         json=payload,
@@ -2270,23 +2333,21 @@ def send_whatsapp_video(
 
 def send_whatsapp_reply(phone: str, reply):
     if isinstance(reply, dict) and reply.get("type") == "video":
-        send_whatsapp_video(
+        return send_whatsapp_video(
             phone=phone,
             caption=reply.get("caption", ""),
             media_id=reply.get("media_id"),
             link=reply.get("link")
         )
-        return
 
     if isinstance(reply, dict) and reply.get("type") == "buttons":
-        send_whatsapp_buttons(
+        return send_whatsapp_buttons(
             phone=phone,
             body=reply.get("body", ""),
             buttons=reply.get("buttons", []),
         )
-        return
 
-    send_whatsapp_message(phone, str(reply))
+    return send_whatsapp_message(phone, str(reply))
 
 
 def get_reply_text(reply):
@@ -2431,7 +2492,7 @@ def upload_whatsapp_media(file_path: Path, mime_type: str):
     file_size_mb = file_path.stat().st_size / (1024 * 1024)
 
     with file_path.open("rb") as file:
-        response = requests.post(
+        response = http_post_with_retry(
             url,
             headers=headers,
             data={"messaging_product": "whatsapp"},
@@ -2480,7 +2541,7 @@ def send_whatsapp_audio(phone: str, media_id: str):
         }
     }
 
-    response = requests.post(
+    response = http_post_with_retry(
         url,
         headers=headers,
         json=payload,
@@ -2571,7 +2632,7 @@ def build_pronunciation_audio_text(question: str, answer: str):
 
     client = get_openai_client()
 
-    response = client.chat.completions.create(
+    response = call_with_retry(client.chat.completions.create, operation="chat_completion",
         model="gpt-4o-mini",
         messages=[
             {
@@ -2604,7 +2665,7 @@ Rules:
 
 def generate_pronunciation_audio_file(text: str):
     client = get_openai_client()
-    speech = client.audio.speech.create(
+    speech = call_with_retry(client.audio.speech.create, operation="text_to_speech",
         model=os.getenv("OPENAI_TTS_MODEL", "gpt-4o-mini-tts"),
         voice=os.getenv("OPENAI_TTS_VOICE", "alloy"),
         input=text,
@@ -2751,7 +2812,7 @@ def get_whatsapp_media_url(media_id: str):
     _, access_token = get_meta_whatsapp_config()
     url = f"https://graph.facebook.com/v23.0/{media_id}"
 
-    response = requests.get(
+    response = http_get_with_retry(
         url,
         headers={"Authorization": f"Bearer {access_token}"},
         timeout=20
@@ -2771,7 +2832,7 @@ def download_whatsapp_audio(media_id: str):
     _, access_token = get_meta_whatsapp_config()
     media_url = get_whatsapp_media_url(media_id)
 
-    response = requests.get(
+    response = http_get_with_retry(
         media_url,
         headers={"Authorization": f"Bearer {access_token}"},
         timeout=30
@@ -2794,7 +2855,7 @@ def transcribe_audio_file(audio_path: Path):
     client = get_openai_client()
 
     with audio_path.open("rb") as audio_file:
-        transcript = client.audio.transcriptions.create(
+        transcript = call_with_retry(client.audio.transcriptions.create, operation="transcription",
             model=os.getenv("OPENAI_TRANSCRIBE_MODEL", "whisper-1"),
             file=audio_file
         )
@@ -3375,6 +3436,20 @@ def get_current_user(token: str = Depends(oauth2_scheme)):
         )
 
 
+def require_dashboard_admin(
+    x_admin_key: str | None = Header(None, alias="X-Admin-Key"),
+):
+    configured_key = os.getenv("DASHBOARD_ADMIN_TOKEN")
+    if not configured_key:
+        raise HTTPException(
+            status_code=503,
+            detail="DASHBOARD_ADMIN_TOKEN nao configurado",
+        )
+    if not x_admin_key or not secrets.compare_digest(x_admin_key, configured_key):
+        raise HTTPException(status_code=401, detail="Chave administrativa invalida")
+    return True
+
+
 def get_recent_learning_summary(student_id: int, db: Session):
     records = (
         db.query(LearningRecordDB)
@@ -3402,7 +3477,7 @@ def get_recent_learning_summary(student_id: int, db: Session):
 def extract_learning_record(student: StudentDB, question: str, answer: str):
     client = get_openai_client()
 
-    response = client.chat.completions.create(
+    response = call_with_retry(client.chat.completions.create, operation="chat_completion",
         model="gpt-4o-mini",
         response_format={"type": "json_object"},
         messages=[
@@ -3755,7 +3830,7 @@ Brand voice:
 
     client = get_openai_client()
 
-    response = client.chat.completions.create(
+    response = call_with_retry(client.chat.completions.create, operation="chat_completion",
         model="gpt-4o-mini",
         messages=messages
     )
@@ -3788,7 +3863,7 @@ def generate_daily_word_challenge(student: StudentDB, db: Session):
     learning_summary = get_recent_learning_summary(student.id, db)
     seasonal_context = get_seasonal_context()
 
-    response = client.chat.completions.create(
+    response = call_with_retry(client.chat.completions.create, operation="chat_completion",
         model="gpt-4o-mini",
         messages=[
             {
@@ -3820,7 +3895,7 @@ def generate_weekly_quiz(student: StudentDB, db: Session):
     learning_summary = get_recent_learning_summary(student.id, db)
     seasonal_context = get_seasonal_context()
 
-    response = client.chat.completions.create(
+    response = call_with_retry(client.chat.completions.create, operation="chat_completion",
         model="gpt-4o-mini",
         messages=[
             {
@@ -3937,7 +4012,7 @@ def generate_weekly_lesson(student: StudentDB, db: Session):
     )
     language_instruction = get_language_instruction(language, level)
 
-    response = client.chat.completions.create(
+    response = call_with_retry(client.chat.completions.create, operation="chat_completion",
         model="gpt-4o-mini",
         messages=[
             {
@@ -4227,72 +4302,20 @@ def register(student: Student, db: Session = Depends(get_db)):
 
 
 @app.get("/students")
-def get_students(db: Session = Depends(get_db)):
+def get_students(
+    db: Session = Depends(get_db),
+    admin: bool = Depends(require_dashboard_admin),
+):
     return db.query(StudentDB).all()
 
 
 @app.get("/students-dashboard")
-def get_students_dashboard(db: Session = Depends(get_db)):
+def get_students_dashboard(
+    db: Session = Depends(get_db),
+    admin: bool = Depends(require_dashboard_admin),
+):
     students = db.query(StudentDB).order_by(StudentDB.id.desc()).all()
-    dashboard = []
-
-    for student in students:
-        lesson = get_current_lesson(student)
-        recent_records = get_recent_learning_records(student.id, db, limit=3)
-        schedule = get_student_lesson_schedule(student)
-        latest_session = get_latest_lesson_session(student, db)
-        completed_lessons = get_completed_lessons_count(student.id, db)
-        rated_sessions = [
-            session.feedback_rating
-            for session in student.lesson_sessions
-            if session.feedback_rating is not None
-        ]
-        average_rating = (
-            round(sum(rated_sessions) / len(rated_sessions), 1)
-            if rated_sessions
-            else None
-        )
-
-        dashboard.append(
-            {
-                "id": student.id,
-                "name": student.name,
-                "phone": student.phone,
-                "level": student.level,
-                "current_stage": student.current_stage,
-                "learning_mode": get_learning_mode_label(student),
-                "current_lesson": format_lesson_title(lesson),
-                "lesson_stage": get_lesson_stage(student),
-                "completed_lessons": completed_lessons,
-                "schedule": format_lesson_schedule(schedule) if schedule else None,
-                "learning_goal": student.learning_goal,
-                "interests": student.interests,
-                "engagement_minutes": student.engagement_minutes or 0,
-                "xp": student.xp or 0,
-                "average_lesson_rating": average_rating,
-                "latest_lesson_session": {
-                    "lesson_title": latest_session.lesson_title,
-                    "status": latest_session.status,
-                    "teacher_audio_sent": latest_session.teacher_audio_sent,
-                    "student_audio_requested": latest_session.student_audio_requested,
-                    "feedback_rating": latest_session.feedback_rating,
-                    "started_at": latest_session.started_at,
-                    "completed_at": latest_session.completed_at,
-                } if latest_session else None,
-                "last_activity": student.last_activity,
-                "recent_learning_records": [
-                    {
-                        "topic": record.topic,
-                        "original_text": record.original_text,
-                        "corrected_text": record.corrected_text,
-                        "explanation": record.explanation
-                    }
-                    for record in recent_records
-                ]
-            }
-        )
-
-    return dashboard
+    return [build_dashboard_student(student, db) for student in students]
 
 
 @app.get("/students/{student_id}")
@@ -4700,6 +4723,90 @@ def get_completed_lessons_count(student_id: int, db: Session):
         )
         .count()
     )
+
+
+DASHBOARD_STAGE_LABELS = {
+    "context_question": "Pergunta de contexto",
+    "short_explanation": "Explicacao curta",
+    "more_examples": "Mais exemplos",
+    "comprehension": "Compreensao",
+    "structure": "Estrutura",
+    "exercise_1": "Primeiro exercicio",
+    "exercise_2": "Segundo exercicio",
+    "production": "Producao",
+    "conversation": "Conversacao",
+    "expansion": "Expansao",
+    "challenge": "Desafio final",
+    "completed": "Aula concluida",
+}
+
+
+def build_dashboard_student(student: StudentDB, db: Session):
+    lesson = get_current_lesson(student)
+    lesson_stage = get_lesson_stage(student)
+    schedule = get_student_lesson_schedule(student)
+    latest_session = get_latest_lesson_session(student, db)
+    recent_records = get_recent_learning_records(student.id, db, limit=3)
+    completed_lessons = get_completed_lessons_count(student.id, db)
+    rated_sessions = [
+        session.feedback_rating
+        for session in student.lesson_sessions
+        if session.feedback_rating is not None
+    ]
+    average_rating = (
+        round(sum(rated_sessions) / len(rated_sessions), 1)
+        if rated_sessions
+        else None
+    )
+    stage_index = (
+        len(LESSON_STAGES)
+        if lesson_stage == LESSON_COMPLETED_STAGE
+        else LESSON_STAGES.index(lesson_stage)
+    )
+    mode = get_learning_mode_label(student)
+
+    return {
+        "id": student.id,
+        "name": student.name,
+        "phone": student.phone,
+        "level": student.level,
+        "current_stage": student.current_stage,
+        "learning_mode": mode,
+        "learning_mode_label": mode.replace("BOT", "Bot").capitalize(),
+        "current_lesson": format_lesson_title(lesson),
+        "lesson_stage": lesson_stage,
+        "lesson_stage_label": DASHBOARD_STAGE_LABELS.get(lesson_stage, lesson_stage),
+        "lesson_progress_percent": round(
+            min(100, ((stage_index + 1) / len(LESSON_STAGES)) * 100)
+        ),
+        "completed_lessons": completed_lessons,
+        "schedule": format_lesson_schedule(schedule) if schedule else None,
+        "learning_goal": student.learning_goal,
+        "interests": student.interests,
+        "engagement_minutes": student.engagement_minutes or 0,
+        "xp": student.xp or 0,
+        "streak_days": student.streak_days or 0,
+        "average_lesson_rating": average_rating,
+        "latest_lesson_session": {
+            "lesson_title": latest_session.lesson_title,
+            "status": latest_session.status,
+            "teacher_audio_sent": latest_session.teacher_audio_sent,
+            "student_audio_requested": latest_session.student_audio_requested,
+            "feedback_rating": latest_session.feedback_rating,
+            "started_at": latest_session.started_at,
+            "completed_at": latest_session.completed_at,
+        } if latest_session else None,
+        "last_activity": student.last_activity,
+        "recent_learning_records": [
+            {
+                "topic": record.topic,
+                "original_text": record.original_text,
+                "corrected_text": record.corrected_text,
+                "explanation": record.explanation,
+            }
+            for record in recent_records
+        ],
+    }
 
 
 def build_status_message(student: StudentDB, db: Session):
@@ -5668,7 +5775,7 @@ def assessment(data: AssessmentRequest, db: Session = Depends(get_db)):
 
     client = get_openai_client()
 
-    response = client.chat.completions.create(
+    response = call_with_retry(client.chat.completions.create, operation="chat_completion",
         model="gpt-4o-mini",
         messages=[
             {
@@ -5707,6 +5814,176 @@ Fluent
     }
 
 
+@app.get("/ops/health")
+def operational_health(db: Session = Depends(get_db)):
+    db.execute(text("SELECT 1"))
+    since = datetime.utcnow() - timedelta(minutes=15)
+    stale_before = datetime.utcnow() - timedelta(minutes=5)
+    recent_errors = db.query(OperationalMetricDB).filter(
+        OperationalMetricDB.status == "error",
+        OperationalMetricDB.created_at >= since,
+    ).count()
+    failed_deliveries = db.query(OutboundDeliveryDB).filter(
+        OutboundDeliveryDB.status == "failed",
+        OutboundDeliveryDB.created_at >= since,
+    ).count()
+    stuck_inbound = db.query(ProcessedWebhookMessageDB).filter(
+        ProcessedWebhookMessageDB.status == "processing",
+        ProcessedWebhookMessageDB.created_at < stale_before,
+    ).count()
+    stuck_outbound = db.query(OutboundDeliveryDB).filter(
+        OutboundDeliveryDB.status == "sending",
+        OutboundDeliveryDB.created_at < stale_before,
+    ).count()
+    degraded = any((recent_errors, failed_deliveries, stuck_inbound, stuck_outbound))
+    return {
+        "status": "degraded" if degraded else "ok",
+        "database": "ok",
+        "errors_last_15_minutes": recent_errors,
+        "failed_deliveries_last_15_minutes": failed_deliveries,
+        "stuck_inbound_messages": stuck_inbound,
+        "stuck_outbound_deliveries": stuck_outbound,
+    }
+
+
+@app.get("/ops/metrics")
+def operational_metrics(
+    hours: int = Query(24, ge=1, le=720),
+    db: Session = Depends(get_db),
+    current_user: dict = Depends(get_current_user),
+):
+    since = datetime.utcnow() - timedelta(hours=hours)
+    rows = (
+        db.query(
+            OperationalMetricDB.service,
+            OperationalMetricDB.operation,
+            OperationalMetricDB.status,
+            func.count(OperationalMetricDB.id),
+            func.avg(OperationalMetricDB.latency_ms),
+            func.sum(OperationalMetricDB.input_tokens),
+            func.sum(OperationalMetricDB.output_tokens),
+            func.sum(OperationalMetricDB.estimated_cost_usd),
+        )
+        .filter(OperationalMetricDB.created_at >= since)
+        .group_by(
+            OperationalMetricDB.service,
+            OperationalMetricDB.operation,
+            OperationalMetricDB.status,
+        )
+        .all()
+    )
+    return {
+        "period_hours": hours,
+        "metrics": [
+            {
+                "service": row[0],
+                "operation": row[1],
+                "status": row[2],
+                "count": row[3],
+                "average_latency_ms": round(float(row[4] or 0), 2),
+                "input_tokens": int(row[5] or 0),
+                "output_tokens": int(row[6] or 0),
+                "estimated_cost_usd": round(float(row[7] or 0), 6),
+            }
+            for row in rows
+        ],
+    }
+
+
+@app.get("/ops/state-transitions")
+def recent_state_transitions(
+    limit: int = Query(100, ge=1, le=500),
+    db: Session = Depends(get_db),
+    current_user: dict = Depends(get_current_user),
+):
+    transitions = (
+        db.query(StateTransitionDB)
+        .order_by(StateTransitionDB.id.desc())
+        .limit(limit)
+        .all()
+    )
+    return [
+        {
+            "student_id": item.student_id,
+            "message_id": item.message_id,
+            "previous_state": item.previous_state,
+            "next_state": item.next_state,
+            "flow": item.flow,
+            "decision": item.decision,
+            "message": item.message_excerpt,
+            "created_at": item.created_at,
+        }
+        for item in transitions
+    ]
+
+
+@app.get("/dashboard", include_in_schema=False)
+def dashboard_page():
+    return FileResponse(DASHBOARD_DIR / "index.html")
+
+
+@app.get("/", include_in_schema=False)
+def sales_page():
+    return FileResponse(SALES_DIR / "index.html")
+
+
+@app.get("/dashboard/api/student")
+def dashboard_student(
+    db: Session = Depends(get_db),
+    current_user: dict = Depends(get_current_user),
+):
+    student_id = current_user.get("student_id")
+    student = db.query(StudentDB).filter(StudentDB.id == student_id).first()
+    if not student:
+        raise HTTPException(status_code=404, detail="Aluno nao encontrado")
+    return build_dashboard_student(student, db)
+
+
+@app.get("/dashboard/api/teacher")
+def dashboard_teacher(
+    db: Session = Depends(get_db),
+    admin: bool = Depends(require_dashboard_admin),
+):
+    students = db.query(StudentDB).order_by(StudentDB.last_activity.desc()).all()
+    active_since = datetime.utcnow() - timedelta(days=7)
+    active_students = db.query(StudentDB).filter(
+        StudentDB.last_activity >= active_since
+    ).count()
+    completed_lessons = db.query(LessonSessionDB).filter(
+        LessonSessionDB.status == "completed"
+    ).count()
+    total_xp = db.query(func.sum(StudentDB.xp)).scalar() or 0
+    return {
+        "summary": {
+            "total_students": len(students),
+            "active_students": active_students,
+            "completed_lessons": completed_lessons,
+            "total_xp": int(total_xp),
+        },
+        "students": [build_dashboard_student(student, db) for student in students],
+    }
+
+
+@app.get("/dashboard/api/operations")
+def dashboard_operations(
+    db: Session = Depends(get_db),
+    admin: bool = Depends(require_dashboard_admin),
+):
+    return {
+        "health": operational_health(db),
+        "metrics": operational_metrics(
+            hours=24,
+            db=db,
+            current_user={"role": "dashboard_admin"},
+        )["metrics"],
+        "transitions": recent_state_transitions(
+            limit=12,
+            db=db,
+            current_user={"role": "dashboard_admin"},
+        ),
+    }
+
+
 @app.get("/meta-webhook")
 def verify_webhook(
     hub_mode: str = Query(None, alias="hub.mode"),
@@ -5732,10 +6009,20 @@ async def receive_message(
     request: Request,
     db: Session = Depends(get_db)
 ):
+    webhook_started = perf_counter()
     data = await request.json()
 
     print("WEBHOOK META")
     print(data)
+
+    inbound_record = None
+    state_snapshot = None
+    flow_name = "unknown"
+    delivery_started = False
+    student = None
+    phone = None
+    message_id = None
+    message = ""
 
     try:
         value = data["entry"][0]["changes"][0]["value"]
@@ -5748,22 +6035,14 @@ async def receive_message(
         message_id = incoming_message.get("id")
         message_type = incoming_message.get("type")
 
-        if message_id:
-            already_processed = db.query(ProcessedWebhookMessageDB).filter(
-                ProcessedWebhookMessageDB.message_id == message_id
-            ).first()
-
-            if already_processed:
-                print("Mensagem Meta ja processada:", message_id)
-                return {"status": "ok"}
-
-            db.add(
-                ProcessedWebhookMessageDB(
-                    message_id=message_id,
-                    phone=phone
-                )
-            )
-            db.commit()
+        inbound_record, should_process = claim_inbound_message(
+            db,
+            message_id,
+            phone,
+        )
+        if not should_process:
+            log_event("inbound_duplicate_skipped", message_id=message_id, phone=phone)
+            return {"status": "ok"}
 
         if message_type == "text":
             message = incoming_message.get("text", {}).get("body", "").strip()
@@ -5785,39 +6064,70 @@ async def receive_message(
             media_id = incoming_message.get("audio", {}).get("id")
 
             if not media_id:
-                send_whatsapp_message(
-                    phone,
-                    "Nao consegui abrir esse audio. Pode tentar mandar novamente?"
+                send_reply_once(
+                    db=db,
+                    idempotency_key=f"{message_id or phone}:unsupported",
+                    phone=phone,
+                    reply="Nao consegui abrir esse audio. Pode tentar mandar novamente?",
+                    sender=send_whatsapp_reply,
+                    reply_text=get_reply_text,
                 )
+                complete_inbound_message(db, inbound_record)
                 return {"status": "ok"}
 
             transcript = transcribe_whatsapp_audio(media_id)
 
             if not transcript:
-                send_whatsapp_message(
-                    phone,
-                    "Nao consegui entender o audio. Pode gravar de novo, bem curtinho?"
+                send_reply_once(
+                    db=db,
+                    idempotency_key=f"{message_id or phone}:transcription_failed",
+                    phone=phone,
+                    reply="Nao consegui entender o audio. Pode gravar de novo, bem curtinho?",
+                    sender=send_whatsapp_reply,
+                    reply_text=get_reply_text,
                 )
+                complete_inbound_message(db, inbound_record)
                 return {"status": "ok"}
 
             message = f"[Voice note transcription] {transcript}"
         else:
-            send_whatsapp_message(
-                phone,
-                "Por enquanto consigo responder mensagens de texto e audio. Me envie uma frase, pergunta ou audio curto."
+            send_reply_once(
+                db=db,
+                idempotency_key=f"{message_id or phone}:unsupported",
+                phone=phone,
+                reply="Por enquanto consigo responder mensagens de texto e audio. Me envie uma frase, pergunta ou audio curto.",
+                sender=send_whatsapp_reply,
+                reply_text=get_reply_text,
             )
+            complete_inbound_message(db, inbound_record)
             return {"status": "ok"}
 
         if not message:
-            send_whatsapp_message(
-                phone,
-                "Por enquanto consigo responder mensagens de texto e audio. Me envie uma frase, pergunta ou audio curto."
+            send_reply_once(
+                db=db,
+                idempotency_key=f"{message_id or phone}:empty",
+                phone=phone,
+                reply="Por enquanto consigo responder mensagens de texto e audio. Me envie uma frase, pergunta ou audio curto.",
+                sender=send_whatsapp_reply,
+                reply_text=get_reply_text,
             )
+            complete_inbound_message(db, inbound_record)
             return {"status": "ok"}
 
         print("TELEFONE:", phone)
         print("TELEFONE ENVIO:", normalize_whatsapp_phone_for_send(phone))
         print("MENSAGEM:", message)
+
+        student = get_or_create_whatsapp_student(phone, db)
+        state_snapshot = snapshot_student(student)
+        flow_name = resolve_flow(student, message)
+        log_event(
+            "message_processing_started",
+            message_id=message_id,
+            student_id=student.id,
+            flow=flow_name,
+            state=state_name(state_snapshot.current_stage),
+        )
 
         reply = process_whatsapp_message(
             phone=phone,
@@ -5827,11 +6137,16 @@ async def receive_message(
 
         replies = reply if isinstance(reply, list) else [reply]
 
-        for reply_message in replies:
+        delivery_started = True
+        for reply_index, reply_message in enumerate(replies):
             print("RESPOSTA:", get_reply_text(reply_message))
-            send_whatsapp_reply(
-                phone,
-                reply_message
+            send_reply_once(
+                db=db,
+                idempotency_key=f"{message_id or phone}:{reply_index}",
+                phone=phone,
+                reply=reply_message,
+                sender=send_whatsapp_reply,
+                reply_text=get_reply_text,
             )
 
         reply_text = "\n".join(get_reply_text(item) for item in replies)
@@ -5849,22 +6164,88 @@ async def receive_message(
             db=db
         )
 
+        student = db.query(StudentDB).filter(StudentDB.id == student.id).first()
+        audit_transition(
+            db=db,
+            student=student,
+            previous_stage=state_snapshot.current_stage,
+            message_id=message_id,
+            flow=flow_name,
+            decision=reply_text,
+            message=message,
+        )
+        db.commit()
+        complete_inbound_message(db, inbound_record)
+        log_event(
+            "message_processing_completed",
+            message_id=message_id,
+            student_id=student.id,
+            flow=flow_name,
+            state=state_name(student.current_stage),
+        )
+        record_metric(
+            "application",
+            "webhook",
+            "success",
+            (perf_counter() - webhook_started) * 1000,
+        )
+
     except Exception as e:
-        print("Erro ao processar mensagem:", e)
+        log_event(
+            "message_processing_failed",
+            message_id=message_id,
+            phone=phone,
+            flow=flow_name,
+            delivery_started=delivery_started,
+            error=str(e),
+            error_type=type(e).__name__,
+        )
+        record_metric(
+            "application",
+            "webhook",
+            "error",
+            (perf_counter() - webhook_started) * 1000,
+            error_type=type(e).__name__,
+        )
         try:
             db.rollback()
-            if "phone" in locals():
+            if phone and state_snapshot:
                 student = db.query(StudentDB).filter(
                     StudentDB.phone == phone
                 ).first()
 
                 if student:
-                    student.current_stage = 999
+                    restore_student(student, state_snapshot)
+                    student.canonical_state = state_name(state_snapshot.current_stage)
                     student.last_activity = datetime.utcnow()
                     db.commit()
-                    print("Aluno marcado para recuperacao:", phone)
+
+                    if not delivery_started:
+                        recovery_reply = recover_student_flow(student, db)
+                        send_reply_once(
+                            db=db,
+                            idempotency_key=f"{message_id or phone}:recovery",
+                            phone=phone,
+                            reply=recovery_reply,
+                            sender=send_whatsapp_reply,
+                            reply_text=get_reply_text,
+                        )
+                        inbound_record = db.query(ProcessedWebhookMessageDB).filter(
+                            ProcessedWebhookMessageDB.message_id == message_id
+                        ).first() if message_id else None
+                        complete_inbound_message(db, inbound_record)
+                        return {"status": "recovered"}
+
+            inbound_record = db.query(ProcessedWebhookMessageDB).filter(
+                ProcessedWebhookMessageDB.message_id == message_id
+            ).first() if message_id else None
+            fail_inbound_message(db, inbound_record, e)
         except Exception as recovery_error:
             db.rollback()
-            print("Erro ao marcar aluno para recuperacao:", recovery_error)
+            log_event(
+                "automatic_recovery_failed",
+                message_id=message_id,
+                error=str(recovery_error),
+            )
 
     return {"status": "ok"}

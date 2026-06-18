@@ -100,6 +100,7 @@ META_PHONE_NUMBER_ID=
 META_ACCESS_TOKEN=
 META_VERIFY_TOKEN=
 WINGO_INTRO_VIDEO_MEDIA_ID=
+DASHBOARD_ADMIN_TOKEN=
 LOCAL_TIMEZONE=America/Sao_Paulo
 LOCAL_UTC_OFFSET_HOURS=-3
 ACADEMIC_AUTOMATIONS_ENABLED=true
@@ -112,6 +113,10 @@ https://SEU-SERVICO.onrender.com/meta-webhook
 ```
 
 O campo `messages` precisa estar inscrito no webhook do WhatsApp.
+
+O painel visual fica disponivel em `/dashboard`. Alunos entram com o mesmo
+email e senha da API. Professores usam o valor seguro configurado em
+`DASHBOARD_ADMIN_TOKEN`; gere uma chave longa e aleatoria para producao.
 
 ---
 
