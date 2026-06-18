@@ -495,7 +495,56 @@ def is_lesson_start_request(message: str):
             r"\bquero aula\b",
             r"\bcontinuar aula\b",
             r"\bstart lesson\b",
+            r"\bvamos (?:para|pra|ter|fazer).*aula\b",
+            r"\bpodemos (?:comecar|iniciar|antecipar).*aula\b",
+            r"\bquero (?:comecar|iniciar|antecipar).*aula\b",
+            r"\baula agora\b",
+            r"^agora$",
         ]
+    )
+
+
+def is_lesson_schedule_question(message: str):
+    text = normalize_intent_text(message)
+    return any(
+        re.search(pattern, text)
+        for pattern in [
+            r"\bque horas.*aula\b",
+            r"\bqual.*horario.*aula\b",
+            r"\bquando.*aula\b",
+            r"\bhorario.*aula\b",
+        ]
+    )
+
+
+def is_schedule_change_request(message: str):
+    text = normalize_intent_text(message)
+    return any(
+        re.search(pattern, text)
+        for pattern in [
+            r"\bmudar.*horario\b",
+            r"\btrocar.*horario\b",
+            r"\balterar.*horario\b",
+            r"\bremarcar.*aula\b",
+            r"\breagendar.*aula\b",
+        ]
+    )
+
+
+def is_ready_for_lesson(message: str):
+    text = normalize_intent_text(message)
+    return (
+        is_affirmative(message)
+        or is_lesson_start_request(message)
+        or any(
+            re.search(pattern, text)
+            for pattern in [
+                r"\bestou pront[oa]\b",
+                r"\bestou disponivel\b",
+                r"\bpode mandar\b",
+                r"\bpode comecar\b",
+            ]
+        )
     )
 
 
@@ -722,6 +771,11 @@ def build_post_lesson_feedback_message(student: StudentDB, db: Session):
             review_lines.append(f"- {record.corrected_text[:90]}")
 
     review_text = "\n".join(review_lines) if review_lines else "- Vamos revisar as frases principais da aula."
+    next_lesson = get_current_lesson(student)
+    next_hook = (
+        f"Na proxima aula: {format_lesson_title(next_lesson)}. "
+        f"Voce vai descobrir como usar {next_lesson['focus'].lower()} em uma conversa real."
+    )
 
     return (
         "Fechamento da aula de hoje:\n\n"
@@ -732,6 +786,7 @@ def build_post_lesson_feedback_message(student: StudentDB, db: Session):
         "- Correcao com feedback imediato\n\n"
         "Para revisar depois:\n"
         f"{review_text}\n\n"
+        f"{next_hook}\n\n"
         "De 0 a 10, quanto essa aula te ajudou hoje?"
     )
 
@@ -2272,7 +2327,10 @@ DAY_ALIASES = {
 
 
 def parse_clock_time(value: str):
-    match = re.search(r"\b(\d{1,2})(?:[:hH](\d{2}))?\b", value or "")
+    match = re.search(
+        r"\b(\d{1,2})(?:(?::|h)(\d{2})?)?(?:\s*horas?)?\b",
+        (value or "").lower()
+    )
 
     if not match:
         return None
@@ -2354,13 +2412,28 @@ def parse_lesson_schedule(message: str):
         if slot not in slots:
             slots.append(slot)
 
-        if len(slots) == 2:
+        if len(slots) == 7:
             break
+
+    if not slots:
+        daily_time = parse_clock_time(text) or parse_day_period_time(text)
+
+        if daily_time:
+            return [
+                {"day": day_index, "time": daily_time}
+                for day_index in range(7)
+            ]
 
     return slots
 
 
 def format_lesson_schedule(slots):
+    if len(slots) == 7:
+        times = {slot.get("time") for slot in slots}
+        days = {slot.get("day") for slot in slots}
+        if len(times) == 1 and days == set(range(7)):
+            return f"todos os dias as {next(iter(times))}"
+
     return " e ".join(
         f"{normalize_day_name(slot['day'])} as {slot['time']}"
         for slot in slots
@@ -2396,6 +2469,91 @@ def has_started_lesson_today(student: StudentDB):
 
 def mark_lesson_started_today(student: StudentDB):
     student.last_lesson_date = today_key()
+
+
+def build_scheduled_lesson_invitation(student: StudentDB, db: Session, now: datetime):
+    if now.hour < 12:
+        greeting = "Bom dia"
+    elif now.hour < 18:
+        greeting = "Boa tarde"
+    else:
+        greeting = "Boa noite"
+
+    lesson = get_current_lesson(student)
+    first_name = (student.name or "").strip().split(" ")[0]
+    name_suffix = f", {first_name}" if first_name else ""
+    previous_session = get_latest_completed_lesson_session(student, db)
+    review_note = ""
+
+    if previous_session:
+        review_note = (
+            f" Antes de comecar {format_lesson_title(lesson)}, "
+            f"vamos fazer uma revisao rapida de {previous_session.lesson_title}."
+        )
+
+    return (
+        f"{greeting}{name_suffix}! Chegou o horario da nossa aula de hoje.\n\n"
+        f"Voce esta pronto e disponivel para comecar agora?{review_note}"
+    )
+
+
+def build_previous_lesson_review(student: StudentDB, db: Session):
+    previous_session = get_latest_completed_lesson_session(student, db)
+
+    if not previous_session:
+        return "Esta e nossa primeira aula guiada, entao vamos direto ao ponto de hoje."
+
+    records = get_recent_learning_records(student.id, db, limit=2)
+    review_items = []
+
+    for record in records:
+        if record.corrected_text:
+            review_items.append(f"- {record.corrected_text[:100]}")
+
+    if not review_items:
+        review_items.append(f"- Tema anterior: {previous_session.lesson_title}")
+
+    return (
+        "Antes, uma revisao bem rapida da ultima aula:\n"
+        + "\n".join(review_items)
+        + "\n\nEscolha uma dessas frases e me diga o que ela significa."
+    )
+
+
+def build_lesson_opening_replies(student: StudentDB, db: Session):
+    lesson = get_current_lesson(student)
+    lesson_video = build_lesson_intro_video_reply(student)
+    replies = []
+
+    if lesson_video:
+        replies.append(lesson_video)
+
+    if lesson["title"] == "Greetings":
+        replies.append("Hoje vamos aprender cumprimentos. Como voce diria 'Ola' em ingles?")
+    else:
+        replies.append(generate_weekly_lesson(student, db))
+
+    return replies
+
+
+def start_guided_lesson(student: StudentDB, db: Session, mode: str):
+    if has_started_lesson_today(student):
+        return (
+            "Por hoje ja fizemos uma aula guiada.\n\n"
+            "Mas posso revisar o conteudo, tirar uma duvida ou praticar uma frase com voce."
+        )
+
+    previous_session = get_latest_completed_lesson_session(student, db)
+    reset_lesson_flow(student)
+    mark_lesson_started_today(student)
+    start_lesson_session(student, db, mode=mode)
+    student.current_stage = 83 if previous_session else 7
+    db.commit()
+
+    if previous_session:
+        return build_previous_lesson_review(student, db)
+
+    return build_lesson_opening_replies(student, db)
 
 
 def get_seasonal_context(now: datetime | None = None):
@@ -3205,17 +3363,12 @@ def send_scheduled_lessons(db: Session, now: datetime):
                 continue
 
             try:
-                if not getattr(student, "lesson_stage", None):
-                    student.lesson_stage = "context_question"
-                mark_lesson_started_today(student)
-                start_lesson_session(student, db, mode="scheduled")
-                update_lesson_engagement(student, db)
-                message = generate_weekly_lesson(student, db)
+                student.current_stage = 82
+                message = build_scheduled_lesson_invitation(student, db, now)
                 send_whatsapp_message(student.phone, message)
 
                 sent_keys.append(lesson_key)
                 student.last_lesson_keys = json.dumps(sent_keys[-20:])
-                student.xp = (student.xp or 0) + 10
                 db.commit()
             except Exception as error:
                 db.rollback()
@@ -3817,6 +3970,12 @@ def get_learning_mode_label(student: StudentDB):
     if student.current_stage == 80:
         return "escolha de idioma"
 
+    if student.current_stage == 82:
+        return "aguardando confirmacao da aula"
+
+    if student.current_stage == 83:
+        return "revisao antes da aula"
+
     return "conversa"
 
 
@@ -4024,7 +4183,7 @@ def handle_control_command(student: StudentDB, message: str, db: Session):
 
         student.current_stage = 70
         db.commit()
-        return "Combinado. Me diga dois dias e horarios para suas aulas."
+        return "Combinado. Qual horario voce prefere para receber sua aula diaria?"
 
     if command == "support":
         return (
@@ -4041,6 +4200,7 @@ def handle_control_command(student: StudentDB, message: str, db: Session):
             "- revisar aula\n"
             "- refazer teste de nivel\n"
             "- mudar para nivel basico/intermediario/avancado\n"
+            "- mudar horario\n"
             "- pausar aulas\n"
             "- reiniciar\n"
             "- suporte"
@@ -4087,7 +4247,7 @@ def recover_student_flow(student: StudentDB, db: Session):
         db.commit()
         return (
             "Tive um problema aqui. Vou retomar com você do ponto certo.\n\n"
-            "Quais dias e horarios voce prefere para suas aulas?"
+            "Qual horario voce prefere para receber sua aula diaria?"
         )
 
     student.current_stage = 7
@@ -4132,7 +4292,7 @@ def process_whatsapp_message(phone: str, message: str, db: Session):
     db.commit()
 
     if (
-        student.current_stage not in {0, 2, 3, 35, 4, 5, 6, 50, 51, 52, 53, 54, 70, 80, 81, 999}
+        student.current_stage not in {0, 2, 3, 35, 4, 5, 6, 50, 51, 52, 53, 54, 70, 80, 81, 82, 83, 999}
         and is_level_retest_request(message)
     ):
         student.assessment_completed = "No"
@@ -4221,7 +4381,7 @@ def process_whatsapp_message(phone: str, message: str, db: Session):
                 "Sem problema. Vamos comecar bem do inicio e no seu ritmo.\n\n"
                 "Entao seu nivel de ingles provavelmente e: Basic.\n\n"
                 f"A primeira aula sera: {format_lesson_title(lesson)}.\n\n"
-                "Quais dias e horarios voce prefere para suas aulas?"
+                "Qual horario voce prefere para receber sua aula diaria?"
             )
 
         if is_unclear_study_experience(message):
@@ -4322,13 +4482,13 @@ def process_whatsapp_message(phone: str, message: str, db: Session):
                 return (
                     "No problem. We will start calmly from your current base.\n\n"
                     f"The first lesson will be: {format_lesson_title(lesson)}.\n\n"
-                    "Which days and times do you prefer for your classes?"
+                    "What time would you like to receive your daily lesson?"
                 )
 
             return (
                 "Tudo bem. Vamos comecar com calma pelo basico.\n\n"
                 f"A primeira aula sera: {format_lesson_title(lesson)}.\n\n"
-                "Quais dias e horarios voce prefere para suas aulas?"
+                "Qual horario voce prefere para receber sua aula diaria?"
             )
 
         if is_unclear_yes_no(message):
@@ -4364,7 +4524,7 @@ def process_whatsapp_message(phone: str, message: str, db: Session):
                 "Sem problema. Parei o teste por aqui.\n\n"
                 f"Vou considerar por enquanto que seu nivel provavelmente e: {student.level}.\n\n"
                 f"A primeira aula sera: {format_lesson_title(lesson)}.\n\n"
-                "Quais dias e horarios voce prefere para suas aulas?"
+                "Qual horario voce prefere para receber sua aula diaria?"
             )
 
         if not is_valid_placement_answer(student.level, question_index, answer_message):
@@ -4410,7 +4570,7 @@ def process_whatsapp_message(phone: str, message: str, db: Session):
                     f"I will prepare your first lesson: {format_lesson_title(lesson)}.\n\n"
                     "When you feel ready in the future, you can ask me to retake the level test."
                 ),
-                "Which days and times do you prefer for your classes?"
+                "What time would you like to receive your daily lesson?"
             ]
 
         return [
@@ -4419,22 +4579,22 @@ def process_whatsapp_message(phone: str, message: str, db: Session):
                 f"Vou preparar sua primeira aula: {format_lesson_title(lesson)}.\n\n"
                 "Quando se sentir preparado no futuro, voce pode me pedir para refazer o teste de nivel."
             ),
-            "Quais dias e horarios voce prefere para suas aulas?"
+            "Qual horario voce prefere para receber sua aula diaria?"
         ]
 
     if student.current_stage == 70:
         slots = parse_lesson_schedule(message)
 
-        if len(slots) < 2:
+        if not slots:
             if normalize_language_preference(student.preferred_language) == "English":
                 return (
-                    "Send me two days and times for your classes.\n\n"
-                    "You can write naturally. Example: Monday morning and Thursday night."
+                    "What time would you like to receive your daily lesson?\n\n"
+                    "Example: every day at 7 PM."
                 )
 
             return (
-                "Me mande dois dias e horarios para suas aulas.\n\n"
-                "Pode escrever do seu jeito. Exemplo: segunda de manha e quinta a noite."
+                "Qual horario voce prefere para receber sua aula diaria?\n\n"
+                "Pode responder, por exemplo: todos os dias as 19h."
             )
 
         student.lesson_schedule = json.dumps(slots)
@@ -4444,7 +4604,7 @@ def process_whatsapp_message(phone: str, message: str, db: Session):
 
         if normalize_language_preference(student.preferred_language) == "English":
             return (
-                "Great! Your weekly classes are scheduled for "
+                "Great! Your classes are scheduled for "
                 f"{format_lesson_schedule(slots)}.\n\n"
                 "In our first lesson, I will guide you step by step.\n\n"
                 "When you feel you have improved, you can ask: retake level test.\n\n"
@@ -4452,7 +4612,7 @@ def process_whatsapp_message(phone: str, message: str, db: Session):
             )
 
         return (
-            "Combinado! Suas aulas semanais ficaram em "
+            "Combinado! Suas aulas ficaram em "
             f"{format_lesson_schedule(slots)}.\n\n"
             "Na nossa primeira aula, eu vou te guiar passo a passo.\n\n"
             "Quando sentir que evoluiu, voce pode pedir: refazer teste de nivel.\n\n"
@@ -4476,7 +4636,39 @@ def process_whatsapp_message(phone: str, message: str, db: Session):
 
         return "Voce prefere continuar a aula em ingles? Pode responder sim ou nao."
 
+    if student.current_stage == 82:
+        if is_ready_for_lesson(message):
+            return start_guided_lesson(student, db, mode="scheduled")
+
+        if is_negative(message) or normalize_intent_text(message) in {
+            "mais tarde", "agora nao", "nao posso", "estou ocupado", "estou ocupada"
+        }:
+            student.current_stage = 7
+            db.commit()
+            return (
+                "Sem problema. Nao vou iniciar a aula agora.\n\n"
+                "Quando estiver disponivel hoje, me mande: vamos para nossa aula."
+            )
+
+        return "Voce esta disponivel para a aula de hoje? Pode responder sim ou dizer que prefere mais tarde."
+
+    if student.current_stage == 83:
+        student.current_stage = 7
+        db.commit()
+        return [
+            "Boa! Revisao concluida. Agora vamos para o conteudo novo de hoje.",
+            *build_lesson_opening_replies(student, db),
+        ]
+
     if student.current_stage == 7:
+        if is_schedule_change_request(message):
+            student.current_stage = 70
+            db.commit()
+            return (
+                "Claro. Qual sera o novo horario da sua aula diaria?\n\n"
+                "Exemplo: todos os dias as 19h."
+            )
+
         requested_level = detect_requested_level_change(message)
 
         if requested_level:
@@ -4505,39 +4697,18 @@ def process_whatsapp_message(phone: str, message: str, db: Session):
                 "Vou explicar em portugues e colocar o ingles aos poucos, no seu ritmo."
             )
 
+    if student.current_stage == 7 and is_lesson_schedule_question(message):
+        slots = get_student_lesson_schedule(student)
+        if slots:
+            return (
+                f"Suas aulas estao programadas para {format_lesson_schedule(slots)}.\n\n"
+                "Se quiser antecipar a aula de hoje, pode dizer: vamos para nossa aula agora."
+            )
+        return "Voce ainda nao definiu um horario. Me diga que horas prefere receber sua aula diaria."
+
     if student.current_stage == 7 and is_lesson_completed(student):
         if is_lesson_start_request(message):
-            if has_started_lesson_today(student):
-                return (
-                    "Por hoje ja fizemos uma aula guiada.\n\n"
-                    "Para a beta, vou liberar 1 aula por dia para cada aluno. "
-                    "Mas posso te ajudar com duvidas, frases, vocabulario ou revisao do que vimos hoje."
-                )
-
-            reset_lesson_flow(student)
-            mark_lesson_started_today(student)
-            start_lesson_session(student, db, mode="manual")
-            db.commit()
-
-            lesson = get_current_lesson(student)
-            lesson_video = build_lesson_intro_video_reply(student)
-
-            replies = [
-                "Combinado! Vamos para a proxima aula.",
-            ]
-
-            if lesson_video:
-                replies.append(lesson_video)
-
-            if lesson["title"] == "Greetings":
-                replies.append("Como voce diria 'Ola' em ingles?")
-            else:
-                replies.append(
-                    f"Hoje vamos trabalhar: {format_lesson_title(lesson)}.\n\n"
-                    "Primeiro, me diga uma coisa simples sobre esse tema com suas palavras."
-                )
-
-            return replies
+            return start_guided_lesson(student, db, mode="manual")
 
         return generate_ai_answer(
             student=student,
@@ -4563,42 +4734,7 @@ def process_whatsapp_message(phone: str, message: str, db: Session):
         return "Percebi que voce escreveu em ingles. Voce quer continuar a aula em ingles?"
 
     if student.current_stage == 7 and is_lesson_start_request(message):
-        if has_started_lesson_today(student):
-            return (
-                "Por hoje ja fizemos uma aula guiada.\n\n"
-                "Para a beta, vou liberar 1 aula por dia para cada aluno. "
-                "Mas posso te ajudar com duvidas, frases, vocabulario ou revisao do que vimos hoje."
-            )
-
-        student.lesson_stage = "context_question"
-        student.messages_in_current_lesson = 0
-        mark_lesson_started_today(student)
-        start_lesson_session(student, db, mode="manual")
-        db.commit()
-
-        lesson = get_current_lesson(student)
-        lesson_video = build_lesson_intro_video_reply(student)
-
-        if lesson["title"] == "Greetings":
-            replies = [
-                "Otimo! Vamos comecar!",
-                "Como voce diria 'Ola' em ingles?"
-            ]
-
-            if lesson_video:
-                replies.insert(1, lesson_video)
-
-            return replies
-
-        replies = [
-            "Otimo! Vamos comecar!",
-            "O que voce esta fazendo agora?"
-        ]
-
-        if lesson_video:
-            replies.insert(1, lesson_video)
-
-        return replies
+        return start_guided_lesson(student, db, mode="manual")
 
     question_for_ai = None
     lesson_was_completed = is_lesson_completed(student)
@@ -4686,7 +4822,7 @@ def update_student_lesson_schedule(
     if len(slots) < 2:
         raise HTTPException(
             status_code=400,
-            detail="Informe dois dias e horarios. Exemplo: segunda 9h e quinta 19h"
+            detail="Informe um horario. Exemplo: todos os dias as 19h"
         )
 
     student.lesson_schedule = json.dumps(slots)
