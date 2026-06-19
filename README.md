@@ -10,7 +10,7 @@
 
   ![Python](https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white)
   ![FastAPI](https://img.shields.io/badge/FastAPI-0.136-009688?logo=fastapi&logoColor=white)
-  ![Tests](https://img.shields.io/badge/tests-44%20passing-16a34a)
+  ![Tests](https://img.shields.io/badge/tests-50%20passing-16a34a)
   ![Status](https://img.shields.io/badge/status-beta-f59e0b)
 </div>
 
@@ -145,6 +145,8 @@ AZURE_SPEECH_REGION=brazilsouth
 META_PHONE_NUMBER_ID=
 META_ACCESS_TOKEN=
 META_VERIFY_TOKEN=
+META_APP_SECRET=
+META_SIGNATURE_REQUIRED=true
 
 DASHBOARD_ADMIN_TOKEN=
 LOCAL_TIMEZONE=America/Sao_Paulo
@@ -179,6 +181,8 @@ https://SEU-DOMINIO/meta-webhook
 
 Use em `META_VERIFY_TOKEN` o mesmo token informado na configuração da Meta e inscreva o campo `messages`. Durante o desenvolvimento, a aplicação local precisa ser exposta por um túnel HTTPS.
 
+`META_APP_SECRET` deve receber a chave secreta do aplicativo configurado na Meta. Em produção, a assinatura `X-Hub-Signature-256` é obrigatória; webhooks sem assinatura válida são rejeitados.
+
 ## Avaliação de pronúncia
 
 Com `AZURE_SPEECH_KEY` e `AZURE_SPEECH_REGION` configurados, o WINGO utiliza o Azure AI Speech para calcular notas acústicas de precisão, fluência, completude e prosódia, além de identificar palavras e fonemas que precisam de atenção.
@@ -193,7 +197,7 @@ A suíte cobre as transições de estado, os fluxos pedagógicos, idempotência,
 python -m unittest discover -s tests -v
 ```
 
-Estado atual: **44 testes aprovados**.
+Estado atual: **50 testes aprovados**.
 
 ## Endpoints principais
 

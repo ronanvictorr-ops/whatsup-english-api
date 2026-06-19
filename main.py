@@ -1,4 +1,6 @@
 import asyncio
+import hashlib
+import hmac
 import json
 import os
 import re
@@ -185,7 +187,22 @@ app.mount(
     name="sales-assets",
 )
 
-SECRET_KEY = os.getenv("SECRET_KEY", "whatsup-english-secret-key")
+IS_PRODUCTION = (
+    os.getenv("ENVIRONMENT", "development").strip().lower() == "production"
+    or os.getenv("RENDER", "").strip().lower() == "true"
+)
+_configured_secret_key = os.getenv("SECRET_KEY")
+if IS_PRODUCTION and (
+    not _configured_secret_key
+    or _configured_secret_key == "whatsup-english-secret-key"
+):
+    raise RuntimeError("SECRET_KEY segura e obrigatoria em producao")
+SECRET_KEY = _configured_secret_key or "whatsup-english-local-development-only"
+META_APP_SECRET = os.getenv("META_APP_SECRET")
+META_SIGNATURE_REQUIRED = os.getenv(
+    "META_SIGNATURE_REQUIRED",
+    "true" if IS_PRODUCTION else "false",
+).strip().lower() == "true"
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60
 
@@ -2173,6 +2190,22 @@ def normalize_whatsapp_phone_for_send(phone: str):
     return digits
 
 
+def whatsapp_phone_variants(phone: str) -> set[str]:
+    digits = "".join(char for char in (phone or "") if char.isdigit())
+    canonical = normalize_whatsapp_phone_for_send(digits)
+    variants = {value for value in (phone, digits, canonical) if value}
+
+    if canonical.startswith("55") and len(canonical) == 13 and canonical[4] == "9":
+        variants.add(canonical[:4] + canonical[5:])
+
+    return variants
+
+
+def mask_phone(phone: str | None) -> str:
+    digits = "".join(char for char in (phone or "") if char.isdigit())
+    return f"***{digits[-4:]}" if digits else "unknown"
+
+
 def get_meta_whatsapp_config():
     phone_number_id = os.getenv("META_PHONE_NUMBER_ID")
     access_token = os.getenv("META_ACCESS_TOKEN")
@@ -2215,8 +2248,7 @@ def send_whatsapp_message(phone: str, text: str):
 
     if response.status_code >= 400:
         print("Erro ao enviar mensagem pela Meta:", response.text)
-        print("Telefone recebido:", phone)
-        print("Telefone usado no envio:", recipient_phone)
+        print("Destinatario da Meta:", mask_phone(recipient_phone))
 
         try:
             meta_error = response.json().get("error", {})
@@ -2334,8 +2366,7 @@ def send_whatsapp_video(
 
     if response.status_code >= 400:
         print("Erro ao enviar video pela Meta:", response.text)
-        print("Telefone recebido:", phone)
-        print("Telefone usado no envio:", recipient_phone)
+        print("Destinatario da Meta:", mask_phone(recipient_phone))
 
         try:
             meta_error = response.json().get("error", {})
@@ -2572,8 +2603,7 @@ def send_whatsapp_audio(phone: str, media_id: str):
 
     if response.status_code >= 400:
         print("Erro ao enviar audio pela Meta:", response.text)
-        print("Telefone recebido:", phone)
-        print("Telefone usado no envio:", recipient_phone)
+        print("Destinatario da Meta:", mask_phone(recipient_phone))
         raise HTTPException(
             status_code=502,
             detail="Erro ao enviar audio pelo WhatsApp Cloud API"
@@ -3541,6 +3571,8 @@ def get_current_user(token: str = Depends(oauth2_scheme)):
             algorithms=[ALGORITHM]
         )
 
+        if not payload.get("student_id"):
+            raise JWTError("Token sem student_id")
         return payload
 
     except JWTError:
@@ -3562,6 +3594,16 @@ def require_dashboard_admin(
     if not x_admin_key or not secrets.compare_digest(x_admin_key, configured_key):
         raise HTTPException(status_code=401, detail="Chave administrativa invalida")
     return True
+
+
+def require_student_access(student_id: int, current_user: dict) -> None:
+    try:
+        authenticated_student_id = int(current_user.get("student_id"))
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=401, detail="Token sem aluno valido")
+
+    if authenticated_student_id != int(student_id):
+        raise HTTPException(status_code=403, detail="Acesso negado a este aluno")
 
 
 def get_recent_learning_summary(student_id: int, db: Session):
@@ -4267,18 +4309,52 @@ def send_scheduled_lessons(db: Session, now: datetime):
                 print("Erro ao enviar aula agendada:", student.id, error)
 
 
+AUTOMATION_LOCK_ID = 846_204_711
+
+
+def acquire_automation_lock(db: Session) -> bool:
+    if engine.dialect.name != "postgresql":
+        return True
+    return bool(
+        db.execute(
+            text("SELECT pg_try_advisory_lock(:lock_id)"),
+            {"lock_id": AUTOMATION_LOCK_ID},
+        ).scalar()
+    )
+
+
+def release_automation_lock(db: Session) -> None:
+    if engine.dialect.name == "postgresql":
+        db.execute(
+            text("SELECT pg_advisory_unlock(:lock_id)"),
+            {"lock_id": AUTOMATION_LOCK_ID},
+        )
+
+
+def run_academic_automations_once(db: Session, now: datetime) -> None:
+    send_scheduled_lessons(db, now)
+    send_daily_word_challenges(db, now)
+    send_weekly_quizzes(db, now)
+    send_weekly_progress_reports(db, now)
+
+
 async def academic_automation_loop():
     while True:
         db = SessionLocal()
+        lock_acquired = False
 
         try:
-            now = local_now()
-            send_scheduled_lessons(db, now)
-            send_weekly_quizzes(db, now)
-            send_weekly_progress_reports(db, now)
+            lock_acquired = acquire_automation_lock(db)
+            if lock_acquired:
+                run_academic_automations_once(db, local_now())
         except Exception as error:
             print("Erro nas automacoes academicas:", error)
         finally:
+            if lock_acquired:
+                try:
+                    release_automation_lock(db)
+                except Exception as error:
+                    print("Erro ao liberar lock das automacoes:", error)
             db.close()
 
         await asyncio.sleep(60)
@@ -4355,6 +4431,16 @@ def get_pedagogy_lesson(lesson_number: int):
 @app.post("/register")
 def register(student: Student, db: Session = Depends(get_db)):
 
+    if len(student.password) < 8:
+        raise HTTPException(
+            status_code=400,
+            detail="A senha precisa ter pelo menos 8 caracteres.",
+        )
+
+    canonical_phone = normalize_whatsapp_phone_for_send(student.phone)
+    if not canonical_phone:
+        raise HTTPException(status_code=400, detail="Telefone invalido.")
+
     existing_student = db.query(StudentDB).filter(
         StudentDB.email == student.email
     ).first()
@@ -4366,7 +4452,7 @@ def register(student: Student, db: Session = Depends(get_db)):
         )
 
     existing_phone = db.query(StudentDB).filter(
-        StudentDB.phone == student.phone
+        StudentDB.phone.in_(whatsapp_phone_variants(student.phone))
     ).first()
 
     if existing_phone:
@@ -4384,7 +4470,7 @@ def register(student: Student, db: Session = Depends(get_db)):
     name=student.name,
     email=student.email,
     password=hashed_password,
-    phone=student.phone,
+    phone=canonical_phone,
     preferred_language=student.preferred_language,
     learning_goal=student.learning_goal,
     interests="",
@@ -4437,7 +4523,12 @@ def get_students_dashboard(
 
 
 @app.get("/students/{student_id}")
-def get_student(student_id: int, db: Session = Depends(get_db)):
+def get_student(
+    student_id: int,
+    db: Session = Depends(get_db),
+    current_user: dict = Depends(get_current_user),
+):
+    require_student_access(student_id, current_user)
     student = db.query(StudentDB).filter(
         StudentDB.id == student_id
     ).first()
@@ -4448,7 +4539,19 @@ def get_student(student_id: int, db: Session = Depends(get_db)):
             detail="Aluno não encontrado"
         )
 
-    return student
+    return {
+        "id": student.id,
+        "name": student.name,
+        "email": student.email,
+        "phone": student.phone,
+        "level": student.level,
+        "preferred_language": student.preferred_language,
+        "learning_goal": student.learning_goal,
+        "current_lesson": student.current_lesson,
+        "lesson_stage": student.lesson_stage,
+        "xp": student.xp or 0,
+        "streak_days": student.streak_days or 0,
+    }
 
 
 # =========================
@@ -4522,7 +4625,12 @@ def quiz(data: QuizAnswer):
 # =========================
 
 @app.post("/progress")
-def save_progress(progress: Progress, db: Session = Depends(get_db)):
+def save_progress(
+    progress: Progress,
+    db: Session = Depends(get_db),
+    current_user: dict = Depends(get_current_user),
+):
+    require_student_access(progress.student_id, current_user)
     new_progress = ProgressDB(
         student_id=progress.student_id,
         score=progress.score
@@ -4539,12 +4647,21 @@ def save_progress(progress: Progress, db: Session = Depends(get_db)):
 
 
 @app.get("/progress")
-def get_progress(db: Session = Depends(get_db)):
-    return db.query(ProgressDB).all()
+def get_progress(
+    db: Session = Depends(get_db),
+    current_user: dict = Depends(get_current_user),
+):
+    student_id = int(current_user["student_id"])
+    return db.query(ProgressDB).filter(ProgressDB.student_id == student_id).all()
 
 
 @app.get("/students/{student_id}/progress")
-def get_student_progress(student_id: int, db: Session = Depends(get_db)):
+def get_student_progress(
+    student_id: int,
+    db: Session = Depends(get_db),
+    current_user: dict = Depends(get_current_user),
+):
+    require_student_access(student_id, current_user)
     student = db.query(StudentDB).filter(
         StudentDB.id == student_id
     ).first()
@@ -4565,7 +4682,10 @@ def get_student_progress(student_id: int, db: Session = Depends(get_db)):
 
 
 @app.get("/ranking")
-def ranking(db: Session = Depends(get_db)):
+def ranking(
+    db: Session = Depends(get_db),
+    current_user: dict = Depends(get_current_user),
+):
     students = (
         db.query(StudentDB)
         .order_by(StudentDB.xp.desc(), StudentDB.id.asc())
@@ -4577,9 +4697,7 @@ def ranking(db: Session = Depends(get_db)):
             "position": index + 1,
             "student_id": student.id,
             "name": student.name,
-            "phone": student.phone,
             "level": student.level,
-            "interests": student.interests,
             "current_lesson": student.current_lesson,
             "lesson_stage": student.lesson_stage,
             "engagement_minutes": student.engagement_minutes or 0,
@@ -4597,8 +4715,10 @@ def ranking(db: Session = Depends(get_db)):
 @app.post("/conversation")
 def save_conversation(
     conversation: Conversation,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: dict = Depends(get_current_user),
 ):
+    require_student_access(conversation.student_id, current_user)
     new_conversation = ConversationDB(
         student_id=conversation.student_id,
         question=conversation.question,
@@ -4616,15 +4736,23 @@ def save_conversation(
 
 
 @app.get("/conversations")
-def get_conversations(db: Session = Depends(get_db)):
-    return db.query(ConversationDB).all()
+def get_conversations(
+    db: Session = Depends(get_db),
+    current_user: dict = Depends(get_current_user),
+):
+    student_id = int(current_user["student_id"])
+    return db.query(ConversationDB).filter(
+        ConversationDB.student_id == student_id
+    ).all()
 
 
 @app.get("/students/{student_id}/conversations")
 def get_student_conversations(
     student_id: int,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: dict = Depends(get_current_user),
 ):
+    require_student_access(student_id, current_user)
     student = db.query(StudentDB).filter(
         StudentDB.id == student_id
     ).first()
@@ -4656,8 +4784,10 @@ def get_student_conversations(
 @app.get("/students/{student_id}/learning-records")
 def get_student_learning_records(
     student_id: int,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: dict = Depends(get_current_user),
 ):
+    require_student_access(student_id, current_user)
     student = db.query(StudentDB).filter(
         StudentDB.id == student_id
     ).first()
@@ -4679,8 +4809,10 @@ def get_student_learning_records(
 @app.post("/learning-records")
 def create_learning_record(
     record: LearningRecord,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: dict = Depends(get_current_user),
 ):
+    require_student_access(record.student_id, current_user)
     student = db.query(StudentDB).filter(
         StudentDB.id == record.student_id
     ).first()
@@ -4722,7 +4854,12 @@ def create_learning_record(
 # =========================
 
 @app.post("/chat")
-def chat(data: ChatRequest, db: Session = Depends(get_db)):
+def chat(
+    data: ChatRequest,
+    db: Session = Depends(get_db),
+    current_user: dict = Depends(get_current_user),
+):
+    require_student_access(data.student_id, current_user)
     student = db.query(StudentDB).filter(
         StudentDB.id == data.student_id
     ).first()
@@ -4752,12 +4889,25 @@ def chat(data: ChatRequest, db: Session = Depends(get_db)):
 
 def get_or_create_whatsapp_student(phone: str, db: Session):
     now = datetime.utcnow()
+    canonical_phone = normalize_whatsapp_phone_for_send(phone)
 
     student = db.query(StudentDB).filter(
-        StudentDB.phone == phone
+        StudentDB.phone == canonical_phone
     ).first()
 
+    if not student:
+        student = db.query(StudentDB).filter(
+            StudentDB.phone.in_(whatsapp_phone_variants(phone))
+        ).order_by(StudentDB.id.asc()).first()
+
     if student:
+        if student.phone != canonical_phone:
+            canonical_owner = db.query(StudentDB).filter(
+                StudentDB.phone == canonical_phone,
+                StudentDB.id != student.id,
+            ).first()
+            if not canonical_owner:
+                student.phone = canonical_phone
         student.last_activity = now
         db.commit()
         db.refresh(student)
@@ -4770,9 +4920,9 @@ def get_or_create_whatsapp_student(phone: str, db: Session):
 
     student = StudentDB(
         name="",
-        email=f"{phone}@whatsapp.local",
+        email=f"{canonical_phone}@whatsapp.local",
         password=hashed_password,
-        phone=phone,
+        phone=canonical_phone,
         preferred_language="Portuguese",
         learning_goal="Conversation",
         interests="",
@@ -5850,8 +6000,10 @@ def process_whatsapp_message(phone: str, message: str, db: Session):
 @app.get("/students/{student_id}/lesson-schedule")
 def get_student_lesson_schedule_endpoint(
     student_id: int,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: dict = Depends(get_current_user),
 ):
+    require_student_access(student_id, current_user)
     student = db.query(StudentDB).filter(
         StudentDB.id == student_id
     ).first()
@@ -5878,8 +6030,10 @@ def get_student_lesson_schedule_endpoint(
 def update_student_lesson_schedule(
     student_id: int,
     schedule: dict,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: dict = Depends(get_current_user),
 ):
+    require_student_access(student_id, current_user)
     student = db.query(StudentDB).filter(
         StudentDB.id == student_id
     ).first()
@@ -5915,7 +6069,12 @@ def update_student_lesson_schedule(
 # =========================
 
 @app.post("/assessment")
-def assessment(data: AssessmentRequest, db: Session = Depends(get_db)):
+def assessment(
+    data: AssessmentRequest,
+    db: Session = Depends(get_db),
+    current_user: dict = Depends(get_current_user),
+):
+    require_student_access(data.student_id, current_user)
     student = db.query(StudentDB).filter(
         StudentDB.id == data.student_id
     ).first()
@@ -5955,6 +6114,9 @@ Fluent
     )
 
     level = response.choices[0].message.content.strip()
+    allowed_levels = {"Basic", "Basic 2", "Intermediate", "Advanced", "Fluent"}
+    if level not in allowed_levels:
+        raise HTTPException(status_code=502, detail="Nivel invalido retornado pela avaliacao")
 
     student.level = level
     student.assessment_completed = "Yes"
@@ -6008,7 +6170,7 @@ def operational_health(db: Session = Depends(get_db)):
 def operational_metrics(
     hours: int = Query(24, ge=1, le=720),
     db: Session = Depends(get_db),
-    current_user: dict = Depends(get_current_user),
+    admin: bool = Depends(require_dashboard_admin),
 ):
     since = datetime.utcnow() - timedelta(hours=hours)
     rows = (
@@ -6052,7 +6214,7 @@ def operational_metrics(
 def recent_state_transitions(
     limit: int = Query(100, ge=1, le=500),
     db: Session = Depends(get_db),
-    current_user: dict = Depends(get_current_user),
+    admin: bool = Depends(require_dashboard_admin),
 ):
     transitions = (
         db.query(StateTransitionDB)
@@ -6132,12 +6294,12 @@ def dashboard_operations(
         "metrics": operational_metrics(
             hours=24,
             db=db,
-            current_user={"role": "dashboard_admin"},
+            admin=True,
         )["metrics"],
         "transitions": recent_state_transitions(
             limit=12,
             db=db,
-            current_user={"role": "dashboard_admin"},
+            admin=True,
         ),
     }
 
@@ -6162,16 +6324,43 @@ def verify_webhook(
         status_code=403,
         detail="Verification failed"
     )
+
+
+def verify_meta_webhook_signature(payload: bytes, signature: str | None) -> None:
+    if not META_SIGNATURE_REQUIRED:
+        return
+    if not META_APP_SECRET:
+        raise HTTPException(status_code=503, detail="META_APP_SECRET nao configurado")
+    if not signature or not signature.startswith("sha256="):
+        raise HTTPException(status_code=401, detail="Assinatura da Meta ausente")
+
+    expected = "sha256=" + hmac.new(
+        META_APP_SECRET.encode("utf-8"),
+        payload,
+        hashlib.sha256,
+    ).hexdigest()
+    if not secrets.compare_digest(signature, expected):
+        raise HTTPException(status_code=401, detail="Assinatura da Meta invalida")
+
+
 @app.post("/meta-webhook")
 async def receive_message(
     request: Request,
     db: Session = Depends(get_db)
 ):
     webhook_started = perf_counter()
-    data = await request.json()
-
-    print("WEBHOOK META")
-    print(data)
+    if META_SIGNATURE_REQUIRED:
+        raw_payload = await request.body()
+        verify_meta_webhook_signature(
+            raw_payload,
+            request.headers.get("X-Hub-Signature-256"),
+        )
+        try:
+            data = json.loads(raw_payload)
+        except json.JSONDecodeError:
+            raise HTTPException(status_code=400, detail="Payload JSON invalido")
+    else:
+        data = await request.json()
 
     inbound_record = None
     state_snapshot = None
@@ -6191,7 +6380,7 @@ async def receive_message(
             return {"status": "ok"}
 
         incoming_message = value["messages"][0]
-        phone = incoming_message["from"]
+        phone = normalize_whatsapp_phone_for_send(incoming_message["from"])
         message_id = incoming_message.get("id")
         message_type = incoming_message.get("type")
 
@@ -6201,8 +6390,14 @@ async def receive_message(
             phone,
         )
         if not should_process:
-            log_event("inbound_duplicate_skipped", message_id=message_id, phone=phone)
-            return {"status": "ok"}
+            log_event(
+                "inbound_duplicate_skipped",
+                message_id=message_id,
+                phone=mask_phone(phone),
+            )
+            if inbound_record and inbound_record.status == "completed":
+                return {"status": "ok"}
+            raise HTTPException(status_code=409, detail="Mensagem ainda em processamento")
 
         if message_type == "text":
             message = incoming_message.get("text", {}).get("body", "").strip()
@@ -6282,9 +6477,12 @@ async def receive_message(
             complete_inbound_message(db, inbound_record)
             return {"status": "ok"}
 
-        print("TELEFONE:", phone)
-        print("TELEFONE ENVIO:", normalize_whatsapp_phone_for_send(phone))
-        print("MENSAGEM:", message)
+        log_event(
+            "inbound_message_received",
+            message_id=message_id,
+            message_type=message_type,
+            phone=mask_phone(phone),
+        )
 
         student = get_or_create_whatsapp_student(phone, db)
         state_snapshot = snapshot_student(student)
@@ -6321,7 +6519,6 @@ async def receive_message(
 
         delivery_started = True
         for reply_index, reply_message in enumerate(replies):
-            print("RESPOSTA:", get_reply_text(reply_message))
             send_reply_once(
                 db=db,
                 idempotency_key=f"{message_id or phone}:{reply_index}",
@@ -6373,6 +6570,9 @@ async def receive_message(
         )
 
     except Exception as e:
+        if isinstance(e, HTTPException) and e.status_code < 500:
+            raise
+
         if incoming_audio_path:
             try:
                 incoming_audio_path.unlink(missing_ok=True)
@@ -6381,7 +6581,7 @@ async def receive_message(
         log_event(
             "message_processing_failed",
             message_id=message_id,
-            phone=phone,
+            phone=mask_phone(phone),
             flow=flow_name,
             delivery_started=delivery_started,
             error=str(e),
@@ -6434,5 +6634,7 @@ async def receive_message(
                 message_id=message_id,
                 error=str(recovery_error),
             )
+
+        raise HTTPException(status_code=503, detail="Falha temporaria no processamento")
 
     return {"status": "ok"}

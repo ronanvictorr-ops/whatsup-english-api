@@ -1,4 +1,7 @@
 import asyncio
+import hashlib
+import hmac
+import json
 import unittest
 from datetime import datetime, timedelta
 from unittest.mock import patch
@@ -16,11 +19,15 @@ from models import (
 
 
 class FakeRequest:
-    def __init__(self, payload):
+    def __init__(self, payload, headers=None):
         self.payload = payload
+        self.headers = headers or {}
 
     async def json(self):
         return self.payload
+
+    async def body(self):
+        return json.dumps(self.payload, separators=(",", ":")).encode("utf-8")
 
 
 def text_payload(message_id="wamid.1", text="hello"):
@@ -142,7 +149,9 @@ class WebhookIntegrationTests(unittest.TestCase):
         with patch.object(main, "process_whatsapp_message", side_effect=self.process), patch.object(
             main, "send_whatsapp_reply", side_effect=flaky_sender
         ):
-            self.receive(payload)
+            with self.assertRaises(main.HTTPException) as failure:
+                self.receive(payload)
+            self.assertEqual(failure.exception.status_code, 503)
             student = self.db.query(StudentDB).one()
             inbound = self.db.query(ProcessedWebhookMessageDB).one()
             self.assertEqual(student.current_stage, 0)
@@ -159,6 +168,38 @@ class WebhookIntegrationTests(unittest.TestCase):
         self.assertEqual(delivery.status, "sent")
         self.assertEqual(delivery.attempts, 2)
         self.assertEqual(send_attempts, 2)
+
+    def test_processing_duplicate_returns_retryable_status(self):
+        self.db.add(
+            ProcessedWebhookMessageDB(
+                message_id="wamid.processing",
+                phone="5511999999999",
+                status="processing",
+                created_at=datetime.utcnow(),
+            )
+        )
+        self.db.commit()
+
+        with self.assertRaises(main.HTTPException) as failure:
+            self.receive(text_payload(message_id="wamid.processing"))
+
+        self.assertEqual(failure.exception.status_code, 409)
+
+    def test_meta_signature_is_verified_when_required(self):
+        payload = b'{"entry":[]}'
+        secret = "test-meta-secret"
+        signature = "sha256=" + hmac.new(
+            secret.encode("utf-8"), payload, hashlib.sha256
+        ).hexdigest()
+
+        with patch.object(main, "META_SIGNATURE_REQUIRED", True), patch.object(
+            main, "META_APP_SECRET", secret
+        ):
+            main.verify_meta_webhook_signature(payload, signature)
+            with self.assertRaises(main.HTTPException) as failure:
+                main.verify_meta_webhook_signature(payload, "sha256=invalid")
+
+        self.assertEqual(failure.exception.status_code, 401)
 
     def test_health_reports_stuck_processing_and_sending(self):
         stale = datetime.utcnow() - timedelta(minutes=10)
