@@ -641,20 +641,28 @@ def detect_language_switch_request(message: str):
     text = normalize_intent_text(message)
 
     english_patterns = [
+        r"^(?:english|ingles)$",
         r"\benglish only\b",
         r"\bonly english\b",
         r"\bspeak (?:only )?english\b",
         r"\bcontinue in english\b",
         r"\blesson in english\b",
+        r"\b(?:mudar|trocar|alterar).*(?:idioma|lingua).*(?:english|ingles)\b",
+        r"\b(?:mudar|trocar|alterar).*para.*(?:english|ingles)\b",
+        r"\bem ingles\b",
         r"\b(?:fale|fala|continue|aula).*somente.*ingles\b",
         r"\b(?:fale|fala|continue|aula).*so em ingles\b",
         r"\bsomente em ingles\b",
     ]
     portuguese_patterns = [
+        r"^(?:portuguese|portugues)$",
         r"\bportuguese only\b",
         r"\bonly portuguese\b",
         r"\bspeak (?:only )?portuguese\b",
         r"\bcontinue in portuguese\b",
+        r"\b(?:mudar|trocar|alterar).*(?:idioma|lingua).*(?:portuguese|portugues)\b",
+        r"\b(?:mudar|trocar|alterar).*para.*(?:portuguese|portugues)\b",
+        r"\bem portugues\b",
         r"\b(?:fale|fala|continue|aula).*somente.*portugues\b",
         r"\b(?:fale|fala|continue|aula).*so em portugues\b",
         r"\bsomente em portugues\b",
@@ -5257,6 +5265,30 @@ def process_whatsapp_message(phone: str, message: str, db: Session):
         if command_reply:
             return command_reply
 
+        requested_language = detect_language_switch_request(message)
+        if (
+            requested_language
+            and getattr(student, "assessment_completed", "No") == "Yes"
+            and student.current_stage in {7, 80, 82, 83, 84}
+        ):
+            student.current_stage = 7
+
+            if requested_language == "English" and is_basic_level(student.level):
+                student.preferred_language = "Portuguese"
+                db.commit()
+                return (
+                    "Nos niveis basicos, vou explicar e orientar sempre em portugues para ficar mais facil.\n\n"
+                    "O ingles continua nos exemplos e exercicios, e eu vou aumentar aos poucos conforme voce evoluir."
+                )
+
+            student.preferred_language = requested_language
+            db.commit()
+
+            if requested_language == "English":
+                return "Combinado. A partir de agora, vou conduzir a aula em ingles. Vamos continuar de onde paramos."
+
+            return "Combinado. A partir de agora, vou explicar em portugues. Vamos continuar de onde paramos."
+
         feedback_reply = save_lesson_feedback_if_expected(student, message, db)
         if feedback_reply:
             return feedback_reply
@@ -5665,25 +5697,6 @@ def process_whatsapp_message(phone: str, message: str, db: Session):
         return generate_writing_practice_feedback(student, message, db)
 
     if student.current_stage == 7:
-        requested_language = detect_language_switch_request(message)
-
-        if requested_language:
-            if requested_language == "English" and is_basic_level(student.level):
-                student.preferred_language = "Portuguese"
-                db.commit()
-                return (
-                    "Nos niveis basicos, vou explicar e orientar sempre em portugues para ficar mais facil.\n\n"
-                    "O ingles continua nos exemplos e exercicios, e eu vou aumentar aos poucos conforme voce evoluir."
-                )
-
-            student.preferred_language = requested_language
-            db.commit()
-
-            if requested_language == "English":
-                return "Got it. I will continue the guided lesson only in English."
-
-            return "Combinado. Vou continuar a aula guiada somente em portugues."
-
         if is_exercise_request(message) and has_recent_past_simple_context(
             student,
             message,
@@ -5760,17 +5773,6 @@ def process_whatsapp_message(phone: str, message: str, db: Session):
                 f"Student message: {message}"
             )
         )
-
-    if (
-        student.current_stage == 7
-        and can_offer_full_english_mode(student)
-        and normalize_language_preference(student.preferred_language) != "English"
-        and looks_like_english_message(message)
-    ):
-        student.current_stage = 80
-        db.commit()
-
-        return "Percebi que voce escreveu em ingles. Voce quer continuar a aula em ingles?"
 
     if student.current_stage == 7 and is_lesson_start_request(message):
         return start_guided_lesson(student, db, mode="manual")

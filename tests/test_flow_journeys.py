@@ -238,6 +238,37 @@ class FlowJourneyTests(unittest.TestCase):
 
         self.assertEqual(main.get_quiz_interface_language(student, "I want exercises"), "pt")
 
+    def test_explicit_language_request_exits_confirmation_state(self):
+        student = self.create_student(
+            stage=80,
+            level="Advanced",
+            preferred_language="Adaptive",
+            assessment_completed="Yes",
+        )
+
+        reply = self.send(student, "portugues")
+
+        self.assertEqual(student.current_stage, 7)
+        self.assertEqual(student.preferred_language, "Portuguese")
+        self.assertIn("continuar de onde paramos", main.normalize_intent_text(reply))
+
+    def test_english_exercise_answer_does_not_reopen_language_confirmation(self):
+        student = self.create_student(
+            stage=80,
+            level="Advanced",
+            preferred_language="Adaptive",
+            assessment_completed="Yes",
+        )
+
+        self.send(student, "nao")
+        self.assertEqual(student.current_stage, 7)
+
+        with patch.object(main, "generate_ai_answer", return_value="Correcao da atividade."):
+            reply = self.send(student, "I studied English yesterday.")
+
+        self.assertEqual(student.current_stage, 7)
+        self.assertNotIn("continuar a aula em ingles", main.normalize_intent_text(reply))
+
 
 if __name__ == "__main__":
     unittest.main()
