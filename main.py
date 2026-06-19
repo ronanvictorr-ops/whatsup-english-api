@@ -1104,6 +1104,9 @@ def save_guided_exchange(student: StudentDB, question: str, answer: str, db: Ses
 
 
 def get_quiz_interface_language(student: StudentDB, message: str = ""):
+    if is_basic_level(getattr(student, "level", None)):
+        return "pt"
+
     preference = normalize_language_preference(student.preferred_language)
     if preference == "English" or looks_like_english_message(message):
         return "en"
@@ -1620,6 +1623,11 @@ def is_mixed_language_message(message: str):
 
 def can_offer_full_english_mode(student):
     return (student.level or "").strip() in {"Advanced", "Fluent"}
+
+
+def is_basic_level(level: str | None):
+    normalized = (level or "").strip().lower()
+    return normalized == "basic" or "basic 2" in normalized or "a1" in normalized
 
 
 def normalize_person_name(value: str):
@@ -3043,6 +3051,14 @@ def normalize_language_preference(value: str):
 
 
 def get_language_instruction(language: str, level: str = "Basic"):
+    if is_basic_level(level):
+        return (
+            "Always write instructions, explanations, questions, corrections, and feedback in Portuguese. "
+            "Use English only for the exact word, phrase, example, or exercise the student is practicing. "
+            "Immediately explain unfamiliar English in Portuguese. Never switch the conversation to English "
+            "just because the student answered in English or requested English-only mode."
+        )
+
     if language == "English":
         return (
             "Reply primarily in English. Do not switch to Portuguese unless the "
@@ -3699,7 +3715,11 @@ def generate_ai_answer(
     interests = getattr(student, "interests", None) or "not informed yet"
     lesson_stage = get_lesson_stage(student)
     lesson_mode = "bot_after_lesson" if lesson_stage == LESSON_COMPLETED_STAGE else "guided_lesson"
-    if lesson_mode == "guided_lesson" and looks_like_english_message(question):
+    if (
+        lesson_mode == "guided_lesson"
+        and not is_basic_level(level)
+        and looks_like_english_message(question)
+    ):
         language_instruction = (
             "Reply entirely in English for this turn. Do not include Portuguese translations "
             "or explanations. Keep the English appropriate for the student's level."
@@ -5188,7 +5208,17 @@ def recover_student_flow(student: StudentDB, db: Session):
 
 def process_whatsapp_message(phone: str, message: str, db: Session):
     student = get_or_create_whatsapp_student(phone, db)
+    if (
+        is_basic_level(getattr(student, "level", None))
+        and normalize_language_preference(student.preferred_language) != "Portuguese"
+    ):
+        student.preferred_language = "Portuguese"
+        db.commit()
+
     practice_choice = parse_practice_button_message(message)
+
+    if practice_choice and is_basic_level(getattr(student, "level", None)):
+        practice_choice["language"] = "pt"
 
     if practice_choice:
         if practice_choice["choice"] == "writing":
@@ -5638,6 +5668,14 @@ def process_whatsapp_message(phone: str, message: str, db: Session):
         requested_language = detect_language_switch_request(message)
 
         if requested_language:
+            if requested_language == "English" and is_basic_level(student.level):
+                student.preferred_language = "Portuguese"
+                db.commit()
+                return (
+                    "Nos niveis basicos, vou explicar e orientar sempre em portugues para ficar mais facil.\n\n"
+                    "O ingles continua nos exemplos e exercicios, e eu vou aumentar aos poucos conforme voce evoluir."
+                )
+
             student.preferred_language = requested_language
             db.commit()
 

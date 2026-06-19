@@ -10,7 +10,7 @@
 
   ![Python](https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white)
   ![FastAPI](https://img.shields.io/badge/FastAPI-0.136-009688?logo=fastapi&logoColor=white)
-  ![Tests](https://img.shields.io/badge/tests-39%20passing-16a34a)
+  ![Tests](https://img.shields.io/badge/tests-42%20passing-16a34a)
   ![Status](https://img.shields.io/badge/status-beta-f59e0b)
 </div>
 
@@ -193,7 +193,7 @@ A suíte cobre as transições de estado, os fluxos pedagógicos, idempotência,
 python -m unittest discover -s tests -v
 ```
 
-Estado atual: **39 testes aprovados**.
+Estado atual: **42 testes aprovados**.
 
 ## Endpoints principais
 

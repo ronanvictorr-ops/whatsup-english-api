@@ -189,7 +189,7 @@ class FlowJourneyTests(unittest.TestCase):
             "__button__:practice:writing:en::Practice writing",
         )
         self.assertEqual(student.current_stage, 84)
-        self.assertIn("two short sentences", writing_prompt)
+        self.assertIn("duas frases curtas", writing_prompt)
 
     def test_bot_mode_answers_without_changing_state(self):
         student = self.create_student(
@@ -207,6 +207,36 @@ class FlowJourneyTests(unittest.TestCase):
         self.assertEqual(student.lesson_stage, "completed")
         self.assertEqual(student.xp, 12)
         answer.assert_called_once()
+
+    def test_basic_levels_always_use_portuguese_guidance(self):
+        for level in ("Basic", "Basic 2"):
+            instruction = main.get_language_instruction("English", level)
+            self.assertIn("Portuguese", instruction)
+            self.assertIn("English only", instruction)
+
+    def test_basic_student_cannot_switch_guidance_to_english(self):
+        student = self.create_student(
+            stage=7,
+            level="Basic 2",
+            preferred_language="English",
+            assessment_completed="Yes",
+        )
+
+        reply = self.send(student, "continue somente em ingles")
+
+        self.assertEqual(student.preferred_language, "Portuguese")
+        self.assertIn("portugues", main.normalize_intent_text(reply))
+        self.assertIn("exemplos e exercicios", main.normalize_intent_text(reply))
+
+    def test_basic_quiz_interface_stays_in_portuguese(self):
+        student = self.create_student(
+            stage=7,
+            level="Basic",
+            preferred_language="English",
+            assessment_completed="Yes",
+        )
+
+        self.assertEqual(main.get_quiz_interface_language(student, "I want exercises"), "pt")
 
 
 if __name__ == "__main__":
