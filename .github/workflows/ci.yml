@@ -53,7 +53,7 @@ jobs:
         if: failure() && steps.tests.outcome == 'failure'
         shell: bash
         run: |
-          details="$(tail -n 80 test-output.log)"
+          details="$(tail -n 35 test-output.log)"
           details="${details//'%'/'%25'}"
           details="${details//$'\n'/'%0A'}"
           details="${details//$'\r'/'%0D'}"
