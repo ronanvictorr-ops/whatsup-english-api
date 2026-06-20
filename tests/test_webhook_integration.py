@@ -10,6 +10,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 import main
+from wingo import security
 from database import Base
 from models import (
     OutboundDeliveryDB,
@@ -192,9 +193,9 @@ class WebhookIntegrationTests(unittest.TestCase):
             secret.encode("utf-8"), payload, hashlib.sha256
         ).hexdigest()
 
-        with patch.object(main, "META_SIGNATURE_REQUIRED", True), patch.object(
-            main, "META_APP_SECRET", secret
-        ):
+        with patch.object(
+            security, "meta_signature_required", return_value=True
+        ), patch.dict("os.environ", {"META_APP_SECRET": secret}):
             main.verify_meta_webhook_signature(payload, signature)
             with self.assertRaises(main.HTTPException) as failure:
                 main.verify_meta_webhook_signature(payload, "sha256=invalid")

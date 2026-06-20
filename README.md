@@ -197,6 +197,31 @@ A suíte cobre as transições de estado, os fluxos pedagógicos, idempotência,
 python -m unittest discover -s tests -v
 ```
 
+## Migrações de banco
+
+O esquema é versionado com Alembic. A aplicação não cria nem altera tabelas
+durante a importação; no Render, `alembic upgrade head` é executado antes do
+Uvicorn pelo `Procfile`.
+
+```bash
+# aplicar todas as migrações pendentes
+alembic upgrade head
+
+# conferir a versão instalada
+alembic current
+
+# criar uma nova migração a partir dos models
+alembic revision --autogenerate -m "descricao da mudanca"
+
+# voltar uma versão (migrações posteriores à baseline)
+alembic downgrade -1
+```
+
+A primeira revisão é uma baseline não destrutiva: ela adota bancos existentes
+e cria o esquema completo em instalações novas. Por segurança, o downgrade da
+baseline não apaga tabelas históricas; revisões seguintes devem sempre declarar
+`upgrade()` e `downgrade()` reversíveis.
+
 Estado atual: **50 testes aprovados**.
 
 ## Endpoints principais
@@ -221,12 +246,19 @@ whatsup-english-api/
 ├── sales/                  # Página comercial
 ├── tests/                  # Testes automatizados
 ├── wingo/
+│   ├── api.py                # Rotas HTTP e endpoints
+│   ├── automations.py        # Rotinas acadêmicas agendadas
 │   ├── flows/              # Fluxos da jornada pedagógica
 │   ├── idempotency.py      # Garantias de entrada e saída
 │   ├── observability.py    # Eventos e métricas
+│   ├── phones.py            # Normalização de telefones
 │   ├── pronunciation.py    # Integração acústica com Azure
 │   ├── retries.py          # Retentativas de serviços externos
-│   └── states.py           # Máquina de estados
+│   ├── security.py          # JWT, autorização e assinatura Meta
+│   ├── states.py            # Máquina de estados
+│   └── webhook.py           # Entrada e entrega confiável do WhatsApp
+├── migrations/              # Versões Alembic do banco
+├── alembic.ini
 ├── database.py
 ├── main.py
 ├── models.py
