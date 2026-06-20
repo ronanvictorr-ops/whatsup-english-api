@@ -1167,10 +1167,12 @@ def build_practice_mode_choice(language: str = "pt"):
         body = "We have completed a good number of quizzes. Would you like to practice writing now?"
         writing_title = "Practice writing"
         quiz_title = "More quizzes"
+        topic_title = "Choose a topic"
     else:
         body = "Ja fizemos uma quantidade significativa de quizzes. Vamos praticar escrita agora?"
         writing_title = "Praticar escrita"
         quiz_title = "Mais quizzes"
+        topic_title = "Escolher tema"
 
     return {
         "type": "buttons",
@@ -1178,13 +1180,14 @@ def build_practice_mode_choice(language: str = "pt"):
         "buttons": [
             {"id": f"practice:writing:{language}", "title": writing_title},
             {"id": f"practice:more_quiz:{language}", "title": quiz_title},
+            {"id": f"practice:choose_topic:{language}", "title": topic_title},
         ],
     }
 
 
 def parse_practice_button_message(message: str):
     match = re.fullmatch(
-        r"__button__:practice:(writing|more_quiz):(pt|en)::(.+)",
+        r"__button__:practice:(writing|more_quiz|choose_topic):(pt|en)::(.+)",
         message or "",
         flags=re.DOTALL,
     )
@@ -3670,6 +3673,9 @@ Lesson guidance:
 - In guided_lesson mode, every student message is first an answer to the current exercise.
 - Example: if the lesson asks what the student did yesterday and they answer "I studied Python", teach the Past Simple in that sentence. Never start a free conversation about Python.
 - Do not ask what project, hobby, subject, movie, game, or activity the student means unless that question is explicitly the current lesson exercise.
+- If an internal instruction says the student explicitly selected a practice topic, that topic has priority over the current lesson and recent history.
+- Never redirect an explicit topic request back to Past Simple or another previous topic.
+- For topic practice, inspect the recent conversation and use new verbs, situations, and example sentences. Do not recycle an earlier exercise unless the student is correcting it.
 
 After-lesson BOT mode:
 - If Current mode is bot_after_lesson, the guided class has already finished.

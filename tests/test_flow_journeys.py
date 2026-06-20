@@ -191,6 +191,60 @@ class FlowJourneyTests(unittest.TestCase):
         self.assertEqual(student.current_stage, 84)
         self.assertIn("duas frases curtas", writing_prompt)
 
+    def test_explicit_topic_request_overrides_recent_past_simple_quiz(self):
+        student = self.create_student(
+            stage=7,
+            assessment_completed="Yes",
+            schedule_completed="Yes",
+            lesson_stage="completed",
+        )
+        self.db.add(
+            ConversationDB(
+                student_id=student.id,
+                question="quero exercicios",
+                answer="Vamos praticar o Past Simple.",
+            )
+        )
+        self.db.commit()
+
+        with patch.object(
+            main, "generate_ai_answer", return_value="Vamos praticar o futuro."
+        ) as answer:
+            reply = self.send(student, "Vamos praticar future")
+
+        self.assertEqual(reply, "Vamos praticar o futuro.")
+        instruction = answer.call_args.kwargs["ai_question"]
+        self.assertIn("Future: will and going to", instruction)
+        self.assertIn("Do not continue Past Simple", instruction)
+
+    def test_quiz_menu_accepts_topic_choice(self):
+        student = self.create_student(stage=7, assessment_completed="Yes")
+
+        prompt = self.send(
+            student,
+            "__button__:practice:choose_topic:pt::Escolher tema",
+        )
+
+        self.assertIn("Qual tema", prompt)
+
+    def test_more_quizzes_rotates_the_deterministic_block(self):
+        student = self.create_student(stage=7, assessment_completed="Yes", xp=6)
+
+        second_block = self.send(
+            student,
+            "__button__:practice:more_quiz:pt::Mais quizzes",
+        )
+        student.xp = 12
+        self.db.commit()
+        first_block = self.send(
+            student,
+            "__button__:practice:more_quiz:pt::Mais quizzes",
+        )
+
+        self.assertIn("homework last night", second_block["body"])
+        self.assertIn("on a project", first_block["body"])
+        self.assertNotEqual(second_block["body"], first_block["body"])
+
     def test_bot_mode_answers_without_changing_state(self):
         student = self.create_student(
             stage=7,
