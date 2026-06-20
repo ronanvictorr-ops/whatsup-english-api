@@ -10,7 +10,8 @@
 
   ![Python](https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white)
   ![FastAPI](https://img.shields.io/badge/FastAPI-0.136-009688?logo=fastapi&logoColor=white)
-  ![Tests](https://img.shields.io/badge/tests-50%20passing-16a34a)
+  [![CI](https://github.com/ronanvictorr-ops/whatsup-english-api/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/ronanvictorr-ops/whatsup-english-api/actions/workflows/ci.yml)
+  ![Tests](https://img.shields.io/badge/tests-56%20passing-16a34a)
   ![Status](https://img.shields.io/badge/status-beta-f59e0b)
 </div>
 
@@ -230,7 +231,9 @@ e cria o esquema completo em instalações novas. Por segurança, o downgrade da
 baseline não apaga tabelas históricas; revisões seguintes devem sempre declarar
 `upgrade()` e `downgrade()` reversíveis.
 
-Estado atual: **50 testes aprovados**.
+Estado atual: **56 testes aprovados**, incluindo validações de arquitetura,
+worker, fluxos pedagógicos, webhook, idempotência, segurança, painel e
+pronúncia. O mesmo conjunto é executado automaticamente no GitHub Actions.
 
 ## Endpoints principais
 
@@ -293,26 +296,32 @@ Start command:
 alembic upgrade head && uvicorn main:app --host 0.0.0.0 --port $PORT
 ```
 
-Crie também um **Background Worker** usando o mesmo repositório, branch e build
-command, com este start command:
+### Worker de automações
+
+O processo separado já está implementado e testado, com este start command:
 
 ```bash
 python worker.py
 ```
 
-O Web Service e o Background Worker devem compartilhar as mesmas variáveis de
-ambiente, incluindo `DATABASE_URL`, credenciais Meta/OpenAI e
-`ACADEMIC_AUTOMATIONS_ENABLED=true`. Não configure o comando do worker como uma
-segunda instância web.
+**Situação atual:** a ativação do serviço separado no Render foi adiada para
+evitar custo adicional. A produção permanece na versão anterior, que mantém as
+automações dentro do processo web. Não promova a versão modular para produção
+antes de criar um Background Worker ou adaptar o comando para um Cron Job.
+
+Quando ativado, o Web Service e o worker devem compartilhar as mesmas variáveis
+de ambiente, incluindo `DATABASE_URL`, credenciais Meta/OpenAI e
+`ACADEMIC_AUTOMATIONS_ENABLED=true`. Não configure o worker como uma segunda
+instância web.
 
 Em produção, configure `DATABASE_URL` com PostgreSQL e cadastre as demais variáveis no painel do Render. Não armazene segredos no repositório.
 
 ## CI/CD e proteção de deploy
 
-O workflow [`.github/workflows/ci.yml`](.github/workflows/ci.yml) executa em
+O workflow [`.github/workflows/ci.yml`](.github/workflows/ci.yml) está ativo e executa em
 pull requests e pushes para `main`/`feature-login`. Ele instala as dependências
 com Python 3.12.8, compila o projeto, aplica Alembic em banco limpo, executa a
-suíte completa e confirma que o banco chegou ao `head`.
+suíte completa de 56 testes e confirma que o banco chegou ao `head`.
 
 Para tornar a proteção efetiva:
 
