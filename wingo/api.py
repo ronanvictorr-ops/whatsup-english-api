@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import re
 
 from fastapi import APIRouter, Depends, Query
 
@@ -1039,6 +1040,39 @@ def recover_student_flow(student: StudentDB, db: Session):
     )
 
 
+def extract_explicit_practice_topic(message: str):
+    text = normalize_intent_text(message)
+    patterns = [
+        r"^(?:vamos\s+)?(?:praticar|treinar|estudar|aprender|revisar)\s+(?:o\s+|a\s+|sobre\s+|tema\s+)?(.+)$",
+        r"^(?:quero|gostaria de)\s+(?:praticar|treinar|estudar|aprender|revisar)\s+(?:o\s+|a\s+|sobre\s+|tema\s+)?(.+)$",
+        r"^(?:let'?s\s+)?(?:practice|study|learn|review)\s+(?:the\s+|about\s+)?(.+)$",
+    ]
+
+    for pattern in patterns:
+        match = re.match(pattern, text)
+        if not match:
+            continue
+
+        topic = match.group(1).strip(" .!?,-")
+        if topic in {"", "agora", "ingles", "english", "exercicios", "exercicio", "quiz"}:
+            return None
+
+        aliases = {
+            "future": "Future: will and going to",
+            "futuro": "Future: will and going to",
+            "past simple": "Past Simple",
+            "simple past": "Past Simple",
+            "passado simples": "Past Simple",
+            "present continuous": "Present Continuous",
+            "presente continuo": "Present Continuous",
+            "present simple": "Present Simple",
+            "presente simples": "Present Simple",
+        }
+        return aliases.get(topic, topic)
+
+    return None
+
+
 def process_whatsapp_message(phone: str, message: str, db: Session):
     student = get_or_create_whatsapp_student(phone, db)
     if (
@@ -1054,6 +1088,11 @@ def process_whatsapp_message(phone: str, message: str, db: Session):
         practice_choice["language"] = "pt"
 
     if practice_choice:
+        if practice_choice["choice"] == "choose_topic":
+            if practice_choice["language"] == "en":
+                return "Which topic would you like to practice? For example: future, travel, work, or pronunciation."
+            return "Qual tema voce quer praticar? Por exemplo: futuro, viagem, trabalho ou pronuncia."
+
         if practice_choice["choice"] == "writing":
             student.current_stage = 84
             db.commit()
@@ -1064,6 +1103,9 @@ def process_whatsapp_message(phone: str, message: str, db: Session):
         student.current_stage = 7
         db.commit()
         prefix = "New quiz block - Question 1 of 3" if practice_choice["language"] == "en" else "Novo bloco de quizzes - Pergunta 1 de 3"
+        completed_blocks = ((student.xp or 0) // 6) % 2
+        if completed_blocks == 0:
+            return build_past_simple_work_quiz(prefix, practice_choice["language"])
         return build_past_simple_finish_quiz(prefix, practice_choice["language"])
 
     quiz_answer = parse_quiz_button_message(message)
@@ -1522,6 +1564,23 @@ def process_whatsapp_message(phone: str, message: str, db: Session):
         return generate_writing_practice_feedback(student, message, db)
 
     if student.current_stage == 7:
+        requested_topic = extract_explicit_practice_topic(message)
+        if requested_topic:
+            return generate_ai_answer(
+                student=student,
+                question=message,
+                db=db,
+                ai_question=(
+                    "[Internal instruction: the student explicitly chose a new practice topic. "
+                    f"Switch immediately to this topic: {requested_topic}. "
+                    "Do not continue Past Simple or the previous quiz unless that is the chosen topic. "
+                    "Acknowledge the topic, give one fresh level-appropriate example that does not "
+                    "repeat recent conversation examples, then ask exactly one short exercise about it. "
+                    "Use Portuguese guidance for Basic and Basic 2 students.]\n\n"
+                    f"Student message: {message}"
+                ),
+            )
+
         if is_exercise_request(message) and has_recent_past_simple_context(
             student,
             message,
