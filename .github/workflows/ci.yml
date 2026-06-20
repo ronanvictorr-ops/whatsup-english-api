@@ -53,6 +53,11 @@ jobs:
         if: failure() && steps.tests.outcome == 'failure'
         shell: bash
         run: |
+          details="$(tail -n 80 test-output.log)"
+          details="${details//'%'/'%25'}"
+          details="${details//$'\n'/'%0A'}"
+          details="${details//$'\r'/'%0D'}"
+          echo "::error title=Unit test failure::$details"
           {
             echo "### Unit test failure"
             echo '```text'
