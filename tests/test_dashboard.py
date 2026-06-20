@@ -1,6 +1,7 @@
 import os
 import unittest
 from datetime import datetime
+from pathlib import Path
 from unittest.mock import patch
 
 from fastapi import HTTPException
@@ -91,11 +92,11 @@ class DashboardTests(unittest.TestCase):
 
     def test_dashboard_page_points_to_bundled_frontend(self):
         response = main.dashboard_page()
-        self.assertTrue(str(response.path).endswith("dashboard\\index.html"))
+        self.assertEqual(Path(response.path).parts[-2:], ("dashboard", "index.html"))
 
     def test_sales_page_points_to_bundled_frontend(self):
         response = main.sales_page()
-        self.assertTrue(str(response.path).endswith("sales\\index.html"))
+        self.assertEqual(Path(response.path).parts[-2:], ("sales", "index.html"))
 
 
 if __name__ == "__main__":
