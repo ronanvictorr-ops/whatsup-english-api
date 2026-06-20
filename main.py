@@ -93,7 +93,6 @@ from wingo.webhook import (
     verify_webhook,
 )
 from wingo.automations import (
-    academic_automation_loop,
     acquire_automation_lock,
     build_weekly_progress_report,
     configure_automations,
@@ -105,7 +104,6 @@ from wingo.automations import (
     send_scheduled_lessons,
     send_weekly_progress_reports,
     send_weekly_quizzes,
-    start_academic_automations,
 )
 from wingo.api import configure_api, router as api_router
 
@@ -164,7 +162,6 @@ WEEKLY_QUIZ_DAY = os.getenv("WEEKLY_QUIZ_DAY", "Friday")
 WEEKLY_QUIZ_TIME = os.getenv("WEEKLY_QUIZ_TIME", "10:00")
 WEEKLY_REPORT_DAY = os.getenv("WEEKLY_REPORT_DAY", "Friday")
 WEEKLY_REPORT_TIME = os.getenv("WEEKLY_REPORT_TIME", "18:00")
-ACADEMIC_AUTOMATIONS_ENABLED = os.getenv("ACADEMIC_AUTOMATIONS_ENABLED", "true").lower() == "true"
 
 PRODUCT_PLANS = [
     {
@@ -3857,6 +3854,5 @@ Brand voice:
 globals().update(configure_api(resolve=lambda name: globals()[name]))
 app.include_router(api_router)
 configure_automations(resolve=lambda name: globals()[name])
-app.router.add_event_handler("startup", start_academic_automations)
 configure_webhook(WebhookDependencies(resolve=lambda name: globals()[name]))
 app.include_router(webhook_router)

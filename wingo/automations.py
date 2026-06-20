@@ -11,7 +11,6 @@ from wingo.retries import call_with_retry
 
 
 _DEPENDENCY_NAMES = (
-    "ACADEMIC_AUTOMATIONS_ENABLED",
     "DAILY_WORD_TIME",
     "WEEKLY_QUIZ_DAY",
     "WEEKLY_QUIZ_TIME",
@@ -381,11 +380,3 @@ async def academic_automation_loop():
             db.close()
 
         await asyncio.sleep(60)
-
-
-async def start_academic_automations():
-    if not ACADEMIC_AUTOMATIONS_ENABLED:
-        print("Automacoes academicas desativadas por ACADEMIC_AUTOMATIONS_ENABLED=false")
-        return
-
-    asyncio.create_task(academic_automation_loop())

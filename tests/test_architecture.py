@@ -19,6 +19,14 @@ class ArchitectureTests(unittest.TestCase):
         )
         self.assertLess(line_count, 4000)
 
+    def test_web_process_does_not_start_academic_scheduler(self):
+        source = (ROOT / "main.py").read_text(encoding="utf-8-sig")
+        self.assertNotIn("start_academic_automations", source)
+        self.assertNotIn("add_event_handler", source)
+
+        procfile = (ROOT / "Procfile").read_text(encoding="utf-8-sig")
+        self.assertIn("worker: python worker.py", procfile)
+
     def test_modular_routers_keep_critical_endpoints(self):
         routes = {
             (method, route.path)

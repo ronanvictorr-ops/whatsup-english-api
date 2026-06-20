@@ -159,8 +159,16 @@ Nunca envie o `.env`, tokens ou chaves de API para o GitHub.
 ### 5. Inicie a aplicação
 
 ```bash
+# terminal 1: API e webhook
 uvicorn main:app --reload
+
+# terminal 2: aulas, desafios e relatórios agendados
+python worker.py
 ```
+
+O servidor web não executa automações em background. O `worker.py` é o único
+processo responsável pelo agendamento; o advisory lock do PostgreSQL continua
+protegendo contra execução duplicada durante reinícios ou sobreposição.
 
 Principais endereços locais:
 
@@ -242,6 +250,7 @@ A especificação completa e interativa está disponível em `/docs` durante a e
 
 ```text
 whatsup-english-api/
+├── .github/workflows/ci.yml # CI de testes e migrações
 ├── dashboard/              # Painel do aluno e professor
 ├── sales/                  # Página comercial
 ├── tests/                  # Testes automatizados
@@ -263,6 +272,7 @@ whatsup-english-api/
 ├── main.py
 ├── models.py
 ├── pedagogy.py
+├── worker.py                # Processo separado de automações
 ├── PRODUCT.md
 └── requirements.txt
 ```
@@ -280,10 +290,40 @@ pip install -r requirements.txt
 Start command:
 
 ```bash
-uvicorn main:app --host 0.0.0.0 --port $PORT
+alembic upgrade head && uvicorn main:app --host 0.0.0.0 --port $PORT
 ```
 
+Crie também um **Background Worker** usando o mesmo repositório, branch e build
+command, com este start command:
+
+```bash
+python worker.py
+```
+
+O Web Service e o Background Worker devem compartilhar as mesmas variáveis de
+ambiente, incluindo `DATABASE_URL`, credenciais Meta/OpenAI e
+`ACADEMIC_AUTOMATIONS_ENABLED=true`. Não configure o comando do worker como uma
+segunda instância web.
+
 Em produção, configure `DATABASE_URL` com PostgreSQL e cadastre as demais variáveis no painel do Render. Não armazene segredos no repositório.
+
+## CI/CD e proteção de deploy
+
+O workflow [`.github/workflows/ci.yml`](.github/workflows/ci.yml) executa em
+pull requests e pushes para `main`/`feature-login`. Ele instala as dependências
+com Python 3.12.8, compila o projeto, aplica Alembic em banco limpo, executa a
+suíte completa e confirma que o banco chegou ao `head`.
+
+Para tornar a proteção efetiva:
+
+1. No GitHub, proteja `main` em **Settings > Branches** e exija o status
+   **Tests and migrations** antes do merge.
+2. No Render, altere Auto-Deploy para **After CI Checks Pass** nos dois serviços.
+3. Faça o Render acompanhar `main`; `feature-login` deve deixar de ser branch de
+   deploy depois da transição.
+
+Sem essas configurações externas, o workflow informa falhas, mas GitHub e Render
+ainda podem aceitar ou implantar um commit reprovado.
 
 ## Próximos passos
 
@@ -291,7 +331,6 @@ Em produção, configure `DATABASE_URL` com PostgreSQL e cadastre as demais vari
 - Medir retenção diária e conclusão de aulas no beta.
 - Implementar revisão espaçada automática.
 - Adicionar sistema de pagamento e assinatura.
-- Reforçar segurança de produção e verificação da assinatura do webhook.
 - Estruturar suporte humano e operação do beta.
 
 O planejamento comercial e pedagógico detalhado está em [`PRODUCT.md`](PRODUCT.md).
