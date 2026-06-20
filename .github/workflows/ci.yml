@@ -25,10 +25,10 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Set up Python 3.12
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.12.8"
           cache: pip
@@ -43,7 +43,22 @@ jobs:
         run: python -m alembic upgrade head
 
       - name: Run tests
-        run: python -m unittest discover -s tests -v
+        id: tests
+        shell: bash
+        run: |
+          set -o pipefail
+          python -m unittest discover -s tests -v 2>&1 | tee test-output.log
+
+      - name: Publish test failure details
+        if: failure() && steps.tests.outcome == 'failure'
+        shell: bash
+        run: |
+          {
+            echo "### Unit test failure"
+            echo '```text'
+            tail -n 120 test-output.log
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Verify migration head
         run: python -m alembic current | grep -q "(head)"
