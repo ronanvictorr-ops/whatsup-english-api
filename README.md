@@ -11,7 +11,7 @@
   ![Python](https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white)
   ![FastAPI](https://img.shields.io/badge/FastAPI-0.136-009688?logo=fastapi&logoColor=white)
   [![CI](https://github.com/ronanvictorr-ops/whatsup-english-api/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/ronanvictorr-ops/whatsup-english-api/actions/workflows/ci.yml)
-  ![Tests](https://img.shields.io/badge/tests-56%20passing-16a34a)
+  ![Tests](https://img.shields.io/badge/tests-64%20passing-16a34a)
   ![Status](https://img.shields.io/badge/status-beta-f59e0b)
 </div>
 
@@ -231,7 +231,7 @@ e cria o esquema completo em instalações novas. Por segurança, o downgrade da
 baseline não apaga tabelas históricas; revisões seguintes devem sempre declarar
 `upgrade()` e `downgrade()` reversíveis.
 
-Estado atual: **56 testes aprovados**, incluindo validações de arquitetura,
+Estado atual: **64 testes aprovados**, incluindo validações de arquitetura,
 worker, fluxos pedagógicos, webhook, idempotência, segurança, painel e
 pronúncia. O mesmo conjunto é executado automaticamente no GitHub Actions.
 
@@ -321,7 +321,7 @@ Em produção, configure `DATABASE_URL` com PostgreSQL e cadastre as demais vari
 O workflow [`.github/workflows/ci.yml`](.github/workflows/ci.yml) está ativo e executa em
 pull requests e pushes para `main`/`feature-login`. Ele instala as dependências
 com Python 3.12.8, compila o projeto, aplica Alembic em banco limpo, executa a
-suíte completa de 56 testes e confirma que o banco chegou ao `head`.
+suíte completa de 64 testes e confirma que o banco chegou ao `head`.
 
 Para tornar a proteção efetiva:
 
