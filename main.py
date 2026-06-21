@@ -1067,7 +1067,7 @@ def get_quiz_interface_language(student: StudentDB, message: str = ""):
         return "pt"
 
     preference = normalize_language_preference(student.preferred_language)
-    if preference == "English" or looks_like_english_message(message):
+    if preference == "English":
         return "en"
     return "pt"
 
@@ -1353,7 +1353,7 @@ def build_quiz_correct_reply(quiz_id: str, student: StudentDB, db: Session):
 
 def generate_writing_practice_feedback(student: StudentDB, message: str, db: Session):
     language = normalize_language_preference(student.preferred_language)
-    response_language = "English" if language == "English" or looks_like_english_message(message) else "Portuguese"
+    response_language = "English" if language == "English" else "Portuguese"
     client = get_openai_client()
     response = call_with_retry(client.chat.completions.create, operation="chat_completion",
         model="gpt-4o-mini",
@@ -1411,7 +1411,7 @@ def build_deterministic_guided_reply(student: StudentDB, answer: str, db: Sessio
 
     language = normalize_language_preference(student.preferred_language)
 
-    if language == "English" or looks_like_english_message(answer):
+    if language == "English":
         explanation = (
             f"Great! \"{answer.strip()}\" is a correct Past Simple sentence.\n\n"
             "Studied is the past form of study. Because study ends in consonant + y, "
@@ -1644,6 +1644,34 @@ def looks_like_name_correction(student: StudentDB, message: str):
 
 def normalize_intent_text(value: str):
     text = (value or "").strip().lower()
+    abbreviations = {
+        "vc": "voce",
+        "vcs": "voces",
+        "q": "que",
+        "qdo": "quando",
+        "qnd": "quando",
+        "qro": "quero",
+        "qr": "quero",
+        "n": "nao",
+        "nn": "nao",
+        "naum": "nao",
+        "blz": "beleza",
+        "tb": "tambem",
+        "tbm": "tambem",
+        "pq": "porque",
+        "pqe": "porque",
+        "pf": "por favor",
+        "pfv": "por favor",
+        "hj": "hoje",
+        "agr": "agora",
+        "dps": "depois",
+        "cmg": "comigo",
+    }
+    text = re.sub(
+        r"\b[a-z0-9]+\b",
+        lambda match: abbreviations.get(match.group(0), match.group(0)),
+        text,
+    )
     text = unicodedata.normalize("NFKD", text)
     text = "".join(
         char for char in text
@@ -2117,6 +2145,68 @@ def get_meta_whatsapp_config():
     return phone_number_id, access_token
 
 
+def polish_portuguese_text(value: str) -> str:
+    text = str(value or "")
+    normalized = f" {normalize_intent_text(text)} "
+    portuguese_markers = (
+        " voce ", " voces ", " nao ", " portugues ", " ingles ", " aula ",
+        " vamos ", " quero ", " qual ", " obrigado ", " obrigada ",
+        " praticar ", " exercicio ", " exercicios ", " nivel ", " horario ",
+        " pronuncia ", " otimo ", " otima ", " proximo ", " proxima ",
+    )
+    if not any(marker in normalized for marker in portuguese_markers):
+        return text
+
+    replacements = {
+        "voce": "você",
+        "voces": "vocês",
+        "nao": "não",
+        "portugues": "português",
+        "ingles": "inglês",
+        "audio": "áudio",
+        "pronuncia": "pronúncia",
+        "nivel": "nível",
+        "niveis": "níveis",
+        "horario": "horário",
+        "horarios": "horários",
+        "otimo": "ótimo",
+        "otima": "ótima",
+        "proximo": "próximo",
+        "proxima": "próxima",
+        "avaliacao": "avaliação",
+        "correcao": "correção",
+        "exercicio": "exercício",
+        "exercicios": "exercícios",
+        "facil": "fácil",
+        "dificil": "difícil",
+        "tambem": "também",
+        "amanha": "amanhã",
+        "acao": "ação",
+        "acoes": "ações",
+        "licao": "lição",
+        "basico": "básico",
+        "basicos": "básicos",
+        "rapida": "rápida",
+        "concluido": "concluído",
+        "sera": "será",
+    }
+    pattern = re.compile(
+        r"\b(" + "|".join(sorted(replacements, key=len, reverse=True)) + r")\b",
+        flags=re.IGNORECASE,
+    )
+
+    def replace(match):
+        original = match.group(0)
+        replacement = replacements[original.lower()]
+        if original.isupper():
+            return replacement.upper()
+        if original[:1].isupper():
+            return replacement[:1].upper() + replacement[1:]
+        return replacement
+
+    return pattern.sub(replace, text)
+
+
 def send_whatsapp_message(phone: str, text: str):
     phone_number_id, access_token = get_meta_whatsapp_config()
     recipient_phone = normalize_whatsapp_phone_for_send(phone)
@@ -2128,6 +2218,7 @@ def send_whatsapp_message(phone: str, text: str):
         "Content-Type": "application/json"
     }
 
+    text = polish_portuguese_text(text)
     payload = {
         "messaging_product": "whatsapp",
         "to": recipient_phone,
@@ -2172,6 +2263,11 @@ def send_whatsapp_buttons(phone: str, body: str, buttons: list[dict]):
         "Authorization": f"Bearer {access_token}",
         "Content-Type": "application/json",
     }
+    body = polish_portuguese_text(body)
+    visible_buttons = [
+        {**button, "title": polish_portuguese_text(str(button["title"]))}
+        for button in buttons
+    ]
     payload = {
         "messaging_product": "whatsapp",
         "to": recipient_phone,
@@ -2188,7 +2284,7 @@ def send_whatsapp_buttons(phone: str, body: str, buttons: list[dict]):
                             "title": str(button["title"])[:20],
                         },
                     }
-                    for button in buttons[:3]
+                    for button in visible_buttons[:3]
                 ]
             },
         },
@@ -2235,7 +2331,7 @@ def send_whatsapp_video(
     }
 
     video_payload = {
-        "caption": caption
+        "caption": polish_portuguese_text(caption)
     }
 
     if media_id:
@@ -2303,9 +2399,9 @@ def send_whatsapp_reply(phone: str, reply):
 
 def get_reply_text(reply):
     if isinstance(reply, dict):
-        return reply.get("caption") or reply.get("body", "")
+        return polish_portuguese_text(reply.get("caption") or reply.get("body", ""))
 
-    return str(reply)
+    return polish_portuguese_text(str(reply))
 
 
 INTRO_VIDEO_PATH = Path(
@@ -2542,8 +2638,8 @@ def should_send_pronunciation_audio(question: str, answer: str):
 
 
 def should_send_pronunciation_audio(question: str, answer: str):
-    text = (question or "").lower()
-    answer_text = (answer or "").lower()
+    text = normalize_intent_text(question)
+    answer_text = normalize_intent_text(answer)
 
     triggers = (
         "como se diz",
@@ -2558,6 +2654,10 @@ def should_send_pronunciation_audio(question: str, answer: str):
         "manda audio",
         "mande audio",
         "manda um audio",
+        "audio de novo",
+        "audio novamente",
+        "repete o audio",
+        "repetir o audio",
         "pode falar",
         "nao entendi",
         "nÃ£o entendi",
@@ -2997,33 +3097,15 @@ def get_language_instruction(language: str, level: str = "Basic"):
 
     if language == "English":
         return (
-            "Reply primarily in English. Do not switch to Portuguese unless the "
-            "student explicitly asks for Portuguese or seems completely stuck."
+            "The student explicitly requested English. Reply primarily in English, but switch "
+            "to Portuguese if the student asks for clarification or seems completely stuck."
         )
-
-    if language == "Portuguese":
-        return (
-            "Use Portuguese as the main explanation language. Still include simple "
-            "English practice sentences, but keep explanations in Portuguese."
-        )
-
-    normalized_level = (level or "").strip().lower()
-
-    if "fluent" in normalized_level or "fluente" in normalized_level or "c2" in normalized_level:
-        return "Mirror the student naturally. Prefer English and use Portuguese only when explicitly requested."
-
-    if "advanced" in normalized_level or "avanc" in normalized_level or "c1" in normalized_level:
-        return "Prefer English. If the student writes in English, answer only in English. Use brief Portuguese only for a requested clarification."
-
-    if "upper" in normalized_level or "b2" in normalized_level:
-        return "Use English for practice and concise Portuguese only when the student needs clarification. Never mix languages inside the same sentence."
-
-    if "intermediate" in normalized_level or "a2" in normalized_level or "b1" in normalized_level:
-        return "Adapt turn by turn: English message gets an English reply; Portuguese message gets a brief Portuguese explanation plus one separate English example."
 
     return (
-        "Start with simple Portuguese guidance and introduce one short English phrase at a time. "
-        "If the student answers in English, reply in simple English. Never mix both languages inside one sentence."
+        "Use Portuguese for all instructions, explanations, questions, corrections, and feedback. "
+        "Use English only inside the exact examples and exercises being practiced. Do not switch "
+        "the conversation to English merely because the student wrote an English sentence. Only "
+        "conduct the conversation in English after an explicit language request."
     )
 
 
@@ -3604,15 +3686,6 @@ def generate_ai_answer(
     interests = getattr(student, "interests", None) or "not informed yet"
     lesson_stage = get_lesson_stage(student)
     lesson_mode = "bot_after_lesson" if lesson_stage == LESSON_COMPLETED_STAGE else "guided_lesson"
-    if (
-        lesson_mode == "guided_lesson"
-        and not is_basic_level(level)
-        and looks_like_english_message(question)
-    ):
-        language_instruction = (
-            "Reply entirely in English for this turn. Do not include Portuguese translations "
-            "or explanations. Keep the English appropriate for the student's level."
-        )
     engagement_minutes = getattr(student, "engagement_minutes", 0) or 0
     lesson_messages = getattr(student, "messages_in_current_lesson", 0) or 0
     learning_summary = get_recent_learning_summary(student.id, db)
@@ -3800,6 +3873,8 @@ Teaching style:
 - When a student repeats an old mistake, briefly remind them of the corrected pattern.
 - Ask one simple follow-up question to keep the student practicing.
 - Do not overwhelm the student with long grammar theory.
+- Understand common Brazilian chat abbreviations and informal writing, such as vc, vcs, q, qro, n, nn, blz, tbm, pq, pfv, hj, agr, and dps. Infer the intended meaning naturally instead of asking the student to write formally.
+- Write every Portuguese word with correct accents and punctuation. Never imitate unaccented or abbreviated Portuguese in the tutor response.
 
 Brand voice:
 - You can occasionally use the slogan "Let's Bora!".

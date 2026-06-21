@@ -1,7 +1,7 @@
 import json
 import os
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from time import perf_counter
 from typing import Any, Callable
 
@@ -30,6 +30,19 @@ class WebhookDependencies:
 
 _dependencies: WebhookDependencies | None = None
 router = APIRouter()
+
+RETURN_GREETING_AFTER = timedelta(minutes=30)
+
+
+def is_returning_after_break(student: StudentDB, now: datetime | None = None) -> bool:
+    last_activity = getattr(student, "last_activity", None)
+    if not last_activity:
+        return False
+
+    current = now or datetime.now(timezone.utc)
+    if last_activity.tzinfo is None:
+        last_activity = last_activity.replace(tzinfo=timezone.utc)
+    return current - last_activity >= RETURN_GREETING_AFTER
 
 
 def configure_webhook(dependencies: WebhookDependencies) -> None:
@@ -166,6 +179,7 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
         )
 
         student = _resolve("get_or_create_whatsapp_student")(phone, db)
+        returning_after_break = is_returning_after_break(student)
         state_snapshot = snapshot_student(student)
         if incoming_audio_path:
             try:
@@ -195,6 +209,14 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
             db=db,
         )
         replies = reply if isinstance(reply, list) else [reply]
+        if returning_after_break:
+            replies = [
+                (
+                    "Que bom que você está de volta! Vamos continuar de onde paramos "
+                    "ou você quer falar de outro assunto?"
+                ),
+                *replies,
+            ]
         if pronunciation_feedback:
             replies = [pronunciation_feedback, *replies]
 
