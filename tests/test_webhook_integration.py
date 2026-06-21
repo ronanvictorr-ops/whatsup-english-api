@@ -136,6 +136,20 @@ class WebhookIntegrationTests(unittest.TestCase):
         )
         self.assertTrue(all(item.status == "sent" for item in deliveries))
 
+    def test_return_after_thirty_minutes_adds_welcome_before_normal_reply(self):
+        student = self.db.query(StudentDB).one()
+        student.last_activity = datetime.utcnow() - timedelta(minutes=31)
+        self.db.commit()
+
+        with patch.object(main, "process_whatsapp_message", side_effect=self.process), patch.object(
+            main, "send_whatsapp_reply", side_effect=self.sender
+        ):
+            self.receive(text_payload(message_id="wamid.returning", text="vamos continuar"))
+
+        self.assertEqual(len(self.sent), 2)
+        self.assertIn("Que bom que você está de volta", self.sent[0][1])
+        self.assertEqual(self.sent[1][1], "first reply")
+
     def test_delivery_failure_restores_state_and_retry_completes(self):
         send_attempts = 0
 

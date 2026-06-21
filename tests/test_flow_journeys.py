@@ -245,6 +245,61 @@ class FlowJourneyTests(unittest.TestCase):
         self.assertIn("on a project", first_block["body"])
         self.assertNotEqual(second_block["body"], first_block["body"])
 
+    def test_audio_can_be_replayed_from_recent_practice(self):
+        student = self.create_student(
+            stage=7,
+            assessment_completed="Yes",
+            schedule_completed="Yes",
+            lesson_stage="completed",
+        )
+        self.db.add(
+            ConversationDB(
+                student_id=student.id,
+                question="Como digo isso?",
+                answer="Repeat after me:\nI am studying English.",
+            )
+        )
+        self.db.commit()
+
+        reply = self.send(student, "manda o áudio de novo")
+
+        self.assertIn("vou repetir o áudio", reply)
+        self.assertIn("I am studying English", reply)
+
+    def test_chat_abbreviations_are_normalized_for_intents(self):
+        normalized = main.normalize_intent_text("vc qro praticar agr, blz? pfv")
+
+        self.assertEqual(
+            normalized,
+            "voce quero praticar agora, beleza? por favor",
+        )
+
+    def test_english_sentence_does_not_change_adaptive_reply_language(self):
+        student = self.create_student(
+            stage=7,
+            level="Intermediate",
+            preferred_language="Adaptive",
+            assessment_completed="Yes",
+        )
+
+        self.assertEqual(
+            main.get_quiz_interface_language(student, "I studied English yesterday."),
+            "pt",
+        )
+        instruction = main.get_language_instruction("Adaptive", "Intermediate")
+        self.assertIn("Use Portuguese", instruction)
+        self.assertIn("Only conduct the conversation in English after an explicit", instruction)
+
+    def test_visible_portuguese_is_polished_before_delivery(self):
+        polished = main.polish_portuguese_text(
+            "Otimo! Voce chegou ao proximo nivel de ingles. Quer audio e exercicios?"
+        )
+
+        self.assertEqual(
+            polished,
+            "Ótimo! Você chegou ao próximo nível de inglês. Quer áudio e exercícios?",
+        )
+
     def test_bot_mode_answers_without_changing_state(self):
         student = self.create_student(
             stage=7,
