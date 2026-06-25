@@ -1514,22 +1514,6 @@ def get_latest_onboarding_note(student: StudentDB, key: str):
     return ""
 
 
-def is_affirmative(message: str):
-    text = (message or "").strip().lower()
-    return any(
-        word in text
-        for word in ["sim", "quero", "pode", "vamos", "yes", "ok", "claro", "bora"]
-    )
-
-
-def is_negative(message: str):
-    text = (message or "").strip().lower()
-    return any(
-        word in text
-        for word in ["nao", "nÃ£o", "prefiro nao", "agora nao", "no"]
-    )
-
-
 def looks_like_english_message(message: str):
     text = (message or "").strip().lower()
 
@@ -2604,37 +2588,6 @@ def send_whatsapp_audio(phone: str, media_id: str):
 
 
 def should_send_pronunciation_audio(question: str, answer: str):
-    text = f"{question}\n{answer}".lower()
-
-    triggers = (
-        "como se diz",
-        "como fala",
-        "como eu digo",
-        "pronuncia",
-        "pronunciar",
-        "pronunciation",
-        "how do you say",
-        "how can i say",
-        "say in english",
-        "em ingles",
-        "em inglÃªs",
-    )
-
-    example_markers = (
-        "example:",
-        "examples:",
-        "for example",
-        "frase:",
-        "frases:",
-        "sentences:",
-    )
-
-    return any(trigger in text for trigger in triggers) or any(
-        marker in text for marker in example_markers
-    )
-
-
-def should_send_pronunciation_audio(question: str, answer: str):
     text = normalize_intent_text(question)
     answer_text = normalize_intent_text(answer)
 
@@ -3004,71 +2957,6 @@ def evaluate_expected_pronunciation(
         session.student_audio_requested = "No"
     db.commit()
     return feedback
-
-
-def normalize_language_preference(value: str):
-    text = (value or "").strip().lower()
-
-    if text in {"2", "english", "ingles", "inglÃªs"} or "engl" in text or "ingl" in text:
-        return "English"
-
-    if text in {"3", "both", "bilingual", "bilingue", "bilingÃ¼e"}:
-        return "Both"
-
-    if "dois" in text or "ambos" in text or "both" in text:
-        return "Both"
-
-    if text in {"1", "portuguese", "portugues", "portuguÃªs"}:
-        return "Portuguese"
-
-    if "port" in text:
-        return "Portuguese"
-
-    return "Portuguese"
-
-
-def get_language_instruction(language: str):
-    if language == "English":
-        return (
-            "Reply primarily in English. Do not switch to Portuguese unless the "
-            "student explicitly asks for Portuguese or seems completely stuck."
-        )
-
-    if language == "Both":
-        return (
-            "Use English as the main practice language, and add short Portuguese "
-            "explanations only when they help the student understand corrections."
-        )
-
-    return (
-        "Use Portuguese for explanations and guidance, but include English examples "
-        "and practice sentences."
-    )
-
-
-def get_assessment_prompt(language: str):
-    if language == "English":
-        return (
-            "Great!\n\n"
-            "Now I will do a quick assessment to understand your current English level.\n\n"
-            "Don't worry about mistakes. Answer as best as you can.\n\n"
-            "How would you introduce yourself in English to someone you just met?"
-        )
-
-    if language == "Both":
-        return (
-            "Perfect!\n\n"
-            "Now I will do a quick assessment to understand your current English level.\n"
-            "Nao se preocupe com erros. Responda da melhor forma que conseguir.\n\n"
-            "How would you introduce yourself in English to someone you just met?"
-        )
-
-    return (
-        "Otimo!\n\n"
-        "Agora vou fazer uma avaliacao rapida para entender seu nivel atual de ingles.\n\n"
-        "Nao se preocupe com erros. Responda da melhor forma que conseguir.\n\n"
-        "Como voce se apresentaria em ingles para alguem que acabou de conhecer?"
-    )
 
 
 def normalize_language_preference(value: str):
