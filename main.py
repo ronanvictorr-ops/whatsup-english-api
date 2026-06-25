@@ -66,6 +66,10 @@ from wingo.idempotency import (
     send_reply_once,
 )
 from wingo.retries import call_with_retry, http_get_with_retry, http_post_with_retry
+from wingo.personal_memory import (
+    get_recent_personal_notes_summary,
+    save_personal_notes_if_needed,
+)
 from wingo.pronunciation import (
     assess_pronunciation,
     build_pronunciation_feedback,
@@ -3574,6 +3578,7 @@ def generate_ai_answer(
     engagement_minutes = getattr(student, "engagement_minutes", 0) or 0
     lesson_messages = getattr(student, "messages_in_current_lesson", 0) or 0
     learning_summary = get_recent_learning_summary(student.id, db)
+    personal_memory = get_recent_personal_notes_summary(student.id, db)
     lesson_context = get_lesson_context(student)
 
     history = (
@@ -3602,6 +3607,9 @@ Student profile:
 
 Recent academic memory:
 {learning_summary}
+
+Personal relationship memory:
+{personal_memory}
 
 Structured course path:
 {lesson_context}
@@ -3710,6 +3718,9 @@ Standard Wingo lesson model:
 
 Personalization:
 - Use the student's interests to create examples, short scenarios, and practice prompts.
+- Use personal relationship memory naturally and sparingly, like a tutor who remembers the student. Do not say you have a database or saved memory.
+- If a saved personal event may have happened recently, you may ask one warm follow-up question, then return to the lesson.
+- Do not repeatedly mention the same personal fact in every message.
 - Every guided lesson should include at least one example or exercise connected to the student's interests, unless the student has not shared interests yet.
 - If the student has no interests saved, ask one quick preference question after the current exercise, not before finishing the required lesson step.
 - If the student likes games, use examples with playing, winning, losing, streaming, characters, missions, and teams.
@@ -3815,6 +3826,14 @@ Brand voice:
         question=question,
         answer=answer,
         db=db
+    )
+
+    save_personal_notes_if_needed(
+        student=student,
+        message=question,
+        db=db,
+        get_openai_client=get_openai_client,
+        call_with_retry=call_with_retry,
     )
 
     return answer
