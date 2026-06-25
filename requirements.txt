@@ -10,4 +10,3 @@ python-multipart==0.0.32
 bcrypt==5.0.0
 requests==2.34.2
 openai==2.41.1
-twilio==9.10.9
