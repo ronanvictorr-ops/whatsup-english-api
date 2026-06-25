@@ -35,6 +35,21 @@ router = APIRouter()
 RETURN_GREETING_AFTER = timedelta(minutes=30)
 
 
+def is_plain_greeting(message: str) -> bool:
+    normalized = (message or "").strip().lower()
+    normalized = normalized.strip("!.? ")
+    return normalized in {
+        "bom dia",
+        "boa tarde",
+        "boa noite",
+        "oi",
+        "ola",
+        "olá",
+        "hello",
+        "hi",
+    }
+
+
 def is_returning_after_break(student: StudentDB, now: datetime | None = None) -> bool:
     last_activity = getattr(student, "last_activity", None)
     if not last_activity:
@@ -217,7 +232,7 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
             db=db,
         )
         replies = reply if isinstance(reply, list) else [reply]
-        if returning_after_break:
+        if returning_after_break and not is_plain_greeting(message):
             replies = [
                 (
                     "Que bom que você está de volta! Vamos continuar de onde paramos "

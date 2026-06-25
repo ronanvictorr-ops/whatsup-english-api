@@ -150,6 +150,19 @@ class WebhookIntegrationTests(unittest.TestCase):
         self.assertIn("Que bom que você está de volta", self.sent[0][1])
         self.assertEqual(self.sent[1][1], "first reply")
 
+    def test_plain_greeting_after_break_does_not_send_duplicate_return_prompt(self):
+        student = self.db.query(StudentDB).one()
+        student.last_activity = datetime.utcnow() - timedelta(minutes=31)
+        self.db.commit()
+
+        with patch.object(main, "process_whatsapp_message", side_effect=self.process), patch.object(
+            main, "send_whatsapp_reply", side_effect=self.sender
+        ):
+            self.receive(text_payload(message_id="wamid.greeting-return", text="Bom dia"))
+
+        self.assertEqual(len(self.sent), 1)
+        self.assertEqual(self.sent[0][1], "first reply")
+
     def test_delivery_failure_restores_state_and_retry_completes(self):
         send_attempts = 0
 
