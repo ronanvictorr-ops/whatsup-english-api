@@ -11,7 +11,7 @@
   ![Python](https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white)
   ![FastAPI](https://img.shields.io/badge/FastAPI-0.136-009688?logo=fastapi&logoColor=white)
   [![CI](https://github.com/ronanvictorr-ops/whatsup-english-api/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/ronanvictorr-ops/whatsup-english-api/actions/workflows/ci.yml)
-  ![Tests](https://img.shields.io/badge/tests-64%20passing-16a34a)
+  ![Tests](https://img.shields.io/badge/tests-69%20passing-16a34a)
   ![Status](https://img.shields.io/badge/status-beta-f59e0b)
 </div>
 
@@ -153,9 +153,32 @@ DASHBOARD_ADMIN_TOKEN=
 LOCAL_TIMEZONE=America/Sao_Paulo
 LOCAL_UTC_OFFSET_HOURS=-3
 ACADEMIC_AUTOMATIONS_ENABLED=true
+
+RATE_LIMIT_ENABLED=true
+RATE_LIMIT_LOGIN_REQUESTS=10
+RATE_LIMIT_LOGIN_WINDOW_SECONDS=300
+RATE_LIMIT_REGISTER_REQUESTS=5
+RATE_LIMIT_REGISTER_WINDOW_SECONDS=3600
+RATE_LIMIT_CHAT_REQUESTS=30
+RATE_LIMIT_CHAT_WINDOW_SECONDS=60
+RATE_LIMIT_ASSESSMENT_REQUESTS=10
+RATE_LIMIT_ASSESSMENT_WINDOW_SECONDS=300
+RATE_LIMIT_WEBHOOK_REQUESTS=60
+RATE_LIMIT_WEBHOOK_WINDOW_SECONDS=60
 ```
 
 Nunca envie o `.env`, tokens ou chaves de API para o GitHub.
+
+## Rate limiting
+
+O WINGO possui protecao de volume no proprio codigo para reduzir abuso e
+loops: cadastro, login, chat, avaliacao de pronuncia e webhook passam por
+janelas deslizantes em memoria. Em producao, mantenha `RATE_LIMIT_ENABLED=true`.
+
+As variaveis `RATE_LIMIT_<ESCOPO>_REQUESTS` e
+`RATE_LIMIT_<ESCOPO>_WINDOW_SECONDS` permitem ajustar cada escopo sem mudar o
+codigo. Os escopos atuais sao `LOGIN`, `REGISTER`, `CHAT`, `ASSESSMENT` e
+`WEBHOOK`.
 
 ### 5. Inicie a aplicação
 
@@ -231,9 +254,10 @@ e cria o esquema completo em instalações novas. Por segurança, o downgrade da
 baseline não apaga tabelas históricas; revisões seguintes devem sempre declarar
 `upgrade()` e `downgrade()` reversíveis.
 
-Estado atual: **64 testes aprovados**, incluindo validações de arquitetura,
+Estado atual: **69 testes aprovados**, incluindo validações de arquitetura,
 worker, fluxos pedagógicos, webhook, idempotência, segurança, painel e
-pronúncia. O mesmo conjunto é executado automaticamente no GitHub Actions.
+pronúncia, além de rate limiting. O mesmo conjunto é executado automaticamente
+no GitHub Actions.
 
 ## Endpoints principais
 
@@ -265,6 +289,7 @@ whatsup-english-api/
 │   ├── observability.py    # Eventos e métricas
 │   ├── phones.py            # Normalização de telefones
 │   ├── pronunciation.py    # Integração acústica com Azure
+│   ├── rate_limit.py       # Limites de volume por escopo
 │   ├── retries.py          # Retentativas de serviços externos
 │   ├── security.py          # JWT, autorização e assinatura Meta
 │   ├── states.py            # Máquina de estados
@@ -321,7 +346,7 @@ Em produção, configure `DATABASE_URL` com PostgreSQL e cadastre as demais vari
 O workflow [`.github/workflows/ci.yml`](.github/workflows/ci.yml) está ativo e executa em
 pull requests e pushes para `main`/`feature-login`. Ele instala as dependências
 com Python 3.12.8, compila o projeto, aplica Alembic em banco limpo, executa a
-suíte completa de 64 testes e confirma que o banco chegou ao `head`.
+suíte completa de 69 testes e confirma que o banco chegou ao `head`.
 
 Para tornar a proteção efetiva:
 
