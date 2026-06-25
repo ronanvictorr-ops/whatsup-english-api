@@ -3,9 +3,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 import re
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, Request
 
 from database import get_db
+from wingo.rate_limit import client_identifier, enforce_rate_limit
 from wingo.security import get_current_user, require_dashboard_admin
 
 
@@ -105,7 +106,13 @@ def get_pedagogy_lesson(lesson_number: int):
 
 
 @_routes.post("/register")
-def register(student: Student, db: Session = Depends(get_db)):
+def register(student: Student, request: Request, db: Session = Depends(get_db)):
+    enforce_rate_limit(
+        "register",
+        client_identifier(request),
+        default_limit=5,
+        default_window_seconds=3600,
+    )
 
     if len(student.password) < 8:
         raise HTTPException(
@@ -235,7 +242,14 @@ def get_student(
 # =========================
 
 @_routes.post("/login")
-def login(data: Login, db: Session = Depends(get_db)):
+def login(data: Login, request: Request, db: Session = Depends(get_db)):
+    login_identity = f"{client_identifier(request)}:{data.email.strip().lower()}"
+    enforce_rate_limit(
+        "login",
+        login_identity,
+        default_limit=10,
+        default_window_seconds=300,
+    )
     student = db.query(StudentDB).filter(
         StudentDB.email == data.email
     ).first()
@@ -532,10 +546,17 @@ def create_learning_record(
 @_routes.post("/chat")
 def chat(
     data: ChatRequest,
+    request: Request,
     db: Session = Depends(get_db),
     current_user: dict = Depends(get_current_user),
 ):
     require_student_access(data.student_id, current_user)
+    enforce_rate_limit(
+        "chat",
+        str(current_user["student_id"]),
+        default_limit=30,
+        default_window_seconds=60,
+    )
     student = db.query(StudentDB).filter(
         StudentDB.id == data.student_id
     ).first()
@@ -1838,10 +1859,17 @@ def update_student_lesson_schedule(
 @_routes.post("/assessment")
 def assessment(
     data: AssessmentRequest,
+    request: Request,
     db: Session = Depends(get_db),
     current_user: dict = Depends(get_current_user),
 ):
     require_student_access(data.student_id, current_user)
+    enforce_rate_limit(
+        "assessment",
+        str(current_user["student_id"]),
+        default_limit=10,
+        default_window_seconds=300,
+    )
     student = db.query(StudentDB).filter(
         StudentDB.id == data.student_id
     ).first()

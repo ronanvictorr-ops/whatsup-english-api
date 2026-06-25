@@ -19,6 +19,7 @@ from wingo.idempotency import (
 )
 from wingo.observability import audit_transition, log_event
 from wingo.phones import mask_phone, normalize_whatsapp_phone
+from wingo.rate_limit import enforce_rate_limit
 from wingo.security import meta_signature_required, verify_meta_webhook_signature
 from wingo.states import restore_student, snapshot_student, state_name
 
@@ -103,6 +104,13 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
         phone = normalize_whatsapp_phone(incoming_message["from"])
         message_id = incoming_message.get("id")
         message_type = incoming_message.get("type")
+
+        enforce_rate_limit(
+            "webhook",
+            phone,
+            default_limit=60,
+            default_window_seconds=60,
+        )
 
         inbound_record, should_process = claim_inbound_message(
             db, message_id, phone
