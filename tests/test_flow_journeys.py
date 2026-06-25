@@ -58,6 +58,9 @@ class FlowJourneyTests(unittest.TestCase):
         replies = self.send(student, "oi")
         self.assertEqual(student.current_stage, 2)
         self.assertIsInstance(replies, list)
+        self.assertEqual(len(replies), 3)
+        self.assertIn("primeiro contato", replies[1].lower())
+        self.assertIn("nome", replies[2].lower())
 
         invalid_reply = self.send(student, "sim")
         self.assertEqual(student.current_stage, 2)

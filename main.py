@@ -2299,6 +2299,34 @@ def send_whatsapp_buttons(phone: str, body: str, buttons: list[dict]):
     return response.json()
 
 
+def send_whatsapp_typing_indicator(message_id: str):
+    phone_number_id, access_token = get_meta_whatsapp_config()
+    url = f"https://graph.facebook.com/v23.0/{phone_number_id}/messages"
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "Content-Type": "application/json",
+    }
+    payload = {
+        "messaging_product": "whatsapp",
+        "status": "read",
+        "message_id": message_id,
+        "typing_indicator": {"type": "text"},
+    }
+
+    response = http_post_with_retry(
+        url,
+        headers=headers,
+        json=payload,
+        timeout=8,
+        operation="meta_typing_indicator",
+        attempts=1,
+    )
+    if response.status_code >= 400:
+        raise RuntimeError(f"Meta typing indicator failed: {response.status_code}")
+
+    return response.json()
+
+
 def send_whatsapp_video(
     phone: str,
     caption: str,

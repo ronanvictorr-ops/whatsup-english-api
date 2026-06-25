@@ -1230,6 +1230,10 @@ def process_whatsapp_message(phone: str, message: str, db: Session):
 
         return [
             build_intro_video_reply(),
+            (
+                "Bem-vindo(a)! Esse e nosso primeiro contato, entao vou te guiar "
+                "passo a passo."
+            ),
             "Primeiro, qual e o seu nome?"
         ]
 
