@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 import re
 
@@ -2110,14 +2111,24 @@ _DYNAMIC_CALLABLES = {
 }
 
 
-def configure_api(resolve):
+def configure_api(dependencies: Mapping[str, object]):
+    dependency_names = set(_DEPENDENCY_NAMES)
+    provided_names = set(dependencies)
+    missing_names = sorted(dependency_names - provided_names)
+    if missing_names:
+        raise RuntimeError(
+            "Missing API dependencies: " + ", ".join(missing_names)
+        )
+
     for name in _DEPENDENCY_NAMES:
         if name in _DYNAMIC_CALLABLES:
+            provider = dependencies[name]
             globals()[name] = (
-                lambda *args, _name=name, **kwargs: resolve(_name)(*args, **kwargs)
+                lambda *args, _provider=provider, **kwargs:
+                _provider()(*args, **kwargs)
             )
         else:
-            globals()[name] = resolve(name)
+            globals()[name] = dependencies[name]
 
     if not router.routes:
         for route in _routes.items:
