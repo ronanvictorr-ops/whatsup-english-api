@@ -119,7 +119,7 @@ def run_academic_automations_once(db: Session, now: datetime) -> None:
 
 
 # =========================
-# CONFIGURAÃ‡Ã•ES INICIAIS
+# CONFIGURAÇÕES INICIAIS
 # =========================
 
 load_dotenv()
@@ -381,10 +381,10 @@ def estimate_level_from_study_history(message: str):
     if "intermedi" in text or "b1" in text or "b2" in text:
         return "Intermediate"
 
-    if "basic 2" in text or "bÃ¡sico 2" in text or "a1+" in text:
+    if "basic 2" in text or "básico 2" in text or "a1+" in text:
         return "Basic 2"
 
-    if "basico" in text or "bÃ¡sico" in text or "iniciante" in text or "a1" in text:
+    if "basico" in text or "básico" in text or "iniciante" in text or "a1" in text:
         return "Basic"
 
     return "Basic"
@@ -398,7 +398,7 @@ def get_placement_questions(level: str):
 
 
 def count_answer_words(message: str):
-    return len(re.findall(r"[A-Za-zÃ€-Ã¿']+", message or ""))
+    return len(re.findall(r"[A-Za-zÀ-ÿ']+", message or ""))
 
 
 def is_valid_placement_answer(level: str, question_index: int, message: str):
@@ -503,12 +503,12 @@ def is_lesson_start_request(message: str):
         for pattern in [
             r"\bvamos comecar\b",
             r"\bcomecar\b",
-            r"\bcomeÃ§ar\b",
+            r"\bcomeçar\b",
             r"\bstart\b",
             r"\blet'?s start\b",
             r"\biniciar\b",
             r"\bproxima aula\b",
-            r"\bprÃ³xima aula\b",
+            r"\bpróxima aula\b",
             r"\bquero aula\b",
             r"\bcontinuar aula\b",
             r"\bstart lesson\b",
@@ -665,11 +665,11 @@ def detect_control_command(message: str):
     text = normalize_intent_text(message)
 
     command_patterns = [
-        ("reset", [r"\breiniciar\b", r"\bresetar\b", r"\bcomecar de novo\b", r"\bcomeÃ§ar de novo\b", r"\bzerar\b"]),
+        ("reset", [r"\breiniciar\b", r"\bresetar\b", r"\bcomecar de novo\b", r"\bcomeçar de novo\b", r"\bzerar\b"]),
         ("status", [r"\bstatus\b", r"\bonde estou\b", r"\bem que etapa\b"]),
-        ("progress", [r"\bmeu progresso\b", r"\bprogresso\b", r"\bminha evolucao\b", r"\bminha evoluÃ§Ã£o\b"]),
+        ("progress", [r"\bmeu progresso\b", r"\bprogresso\b", r"\bminha evolucao\b", r"\bminha evolução\b"]),
         ("weekly_report", [r"\brelatorio semanal\b", r"\brelatorio da semana\b", r"\bresumo da semana\b"]),
-        ("review", [r"\brevisar aula\b", r"\brevisao\b", r"\brevisÃ£o\b", r"\brevisar\b"]),
+        ("review", [r"\brevisar aula\b", r"\brevisao\b", r"\brevisão\b", r"\brevisar\b"]),
         ("pause", [r"\bpausar aulas\b", r"\bpausar\b", r"\bdar um tempo\b"]),
         ("resume", [r"\bretomar aulas\b", r"\bvoltar aulas\b", r"\bcontinuar aulas\b", r"\bvamos continuar\b"]),
         ("support", [r"\bsuporte\b", r"\bfalar com suporte\b", r"\bhumano\b", r"\bprofessor humano\b"]),
@@ -1521,8 +1521,8 @@ def looks_like_english_message(message: str):
         return False
 
     portuguese_markers = [
-        "voce", "vocÃª", "nao", "nÃ£o", "quero", "aula", "ingles", "inglÃªs",
-        "porque", "obrigado", "obrigada", "comecar", "comeÃ§ar"
+        "voce", "você", "nao", "não", "quero", "aula", "ingles", "inglês",
+        "porque", "obrigado", "obrigada", "comecar", "começar"
     ]
 
     if any(marker in text for marker in portuguese_markers):
@@ -1775,7 +1775,7 @@ def is_off_topic_during_assessment(message: str):
         return True
 
     if text in {
-        "sim", "nao", "ok", "okay", "ta", "ta bom", "tÃ¡ bom", "beleza",
+        "sim", "nao", "ok", "okay", "ta", "ta bom", "tá bom", "beleza",
         "entendi", "certo", "volta", "pare", "para", "parar", "stop"
     }:
         return True
@@ -1819,7 +1819,7 @@ def is_number_without_time_unit(message: str):
 def extract_name_candidate(message: str):
     text = (message or "").strip()
     cleaned = re.sub(
-        r"(?i)^(meu nome e|meu nome Ã©|me chamo|sou|corrigindo|correcao|correÃ§Ã£o|na verdade|quis dizer)\s*[:,-]?\s*",
+        r"(?i)^(meu nome e|meu nome é|me chamo|sou|corrigindo|correcao|correção|na verdade|quis dizer)\s*[:,-]?\s*",
         "",
         text
     ).strip()
@@ -2103,7 +2103,7 @@ def get_openai_client():
     if not api_key:
         raise HTTPException(
             status_code=500,
-            detail="OPENAI_API_KEY nÃ£o configurada no arquivo .env"
+            detail="OPENAI_API_KEY não configurada no arquivo .env"
         )
 
     return OpenAI(api_key=api_key)
@@ -2388,7 +2388,7 @@ def get_reply_text(reply):
 INTRO_VIDEO_PATH = Path(
     os.getenv(
         "WINGO_INTRO_VIDEO_PATH",
-        r"C:\Users\Computer\Desktop\WINGO\APRESENTAÃ‡ÃƒO WINGO.mp4"
+        r"C:\Users\Computer\Desktop\WINGO\APRESENTAÇÃO WINGO.mp4"
     )
 )
 
@@ -2610,10 +2610,10 @@ def should_send_pronunciation_audio(question: str, answer: str):
         "repetir o audio",
         "pode falar",
         "nao entendi",
-        "nÃ£o entendi",
+        "não entendi",
         "dificuldade",
         "dificil entender",
-        "difÃ­cil entender",
+        "difícil entender",
     )
 
     answer_triggers = (
@@ -2753,12 +2753,12 @@ def extract_english_phrases_for_audio(answer: str, limit: int = 3):
     candidates = []
 
     for phrase in quoted_phrases:
-        if re.search(r"[A-Za-z]", phrase) and not re.search(r"[Ã€-Ã¿]", phrase):
+        if re.search(r"[A-Za-z]", phrase) and not re.search(r"[À-ÿ]", phrase):
             candidates.append(phrase.strip())
 
     if not candidates:
         for line in (answer or "").splitlines():
-            cleaned = line.strip(" -â€¢0123456789.()")
+            cleaned = line.strip(" -•0123456789.()")
 
             if not cleaned:
                 continue
@@ -2962,10 +2962,10 @@ def evaluate_expected_pronunciation(
 def normalize_language_preference(value: str):
     text = (value or "").strip().lower()
 
-    if text in {"2", "english", "ingles", "inglÃªs"} or "engl" in text or "ingl" in text:
+    if text in {"2", "english", "ingles", "inglês"} or "engl" in text or "ingl" in text:
         return "English"
 
-    if text in {"1", "portuguese", "portugues", "portuguÃªs"} or "port" in text:
+    if text in {"1", "portuguese", "portugues", "português"} or "port" in text:
         return "Portuguese"
 
     return "Adaptive"
@@ -3069,11 +3069,11 @@ class LearningRecord(BaseModel):
 
 DAY_ALIASES = {
     0: ("segunda", "segunda-feira", "monday", "seg"),
-    1: ("terca", "terÃ§a", "terca-feira", "terÃ§a-feira", "tuesday", "ter"),
+    1: ("terca", "terça", "terca-feira", "terça-feira", "tuesday", "ter"),
     2: ("quarta", "quarta-feira", "wednesday", "qua"),
     3: ("quinta", "quinta-feira", "thursday", "qui"),
     4: ("sexta", "sexta-feira", "friday", "sex"),
-    5: ("sabado", "sÃ¡bado", "saturday", "sab", "sÃ¡b"),
+    5: ("sabado", "sábado", "saturday", "sab", "sáb"),
     6: ("domingo", "sunday", "dom"),
 }
 
@@ -3624,7 +3624,7 @@ Lesson guidance:
 - Start from the current lesson topic unless the student asks a direct urgent question.
 - If the student asks something unrelated, answer briefly and gently bring them back to the current lesson.
 - Teach one small point at a time, then ask one practice question.
-- If the student says "vamos comecar", "vamos comeÃ§ar", "start", or "let's start", begin the lesson topic directly. Do not ask "How are you today?" in this case.
+- If the student says "vamos comecar", "vamos começar", "start", or "let's start", begin the lesson topic directly. Do not ask "How are you today?" in this case.
 - Do not jump to future lessons unless the student explicitly asks for a preview.
 - Do not advance the course just because the student sent one answer; reinforce, correct, and practice first.
 - If the student asks "what should I study?" or "start the class", begin the current lesson.
