@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -132,7 +132,7 @@ def register(student: Student, request: Request, db: Session = Depends(get_db)):
     if existing_student:
         raise HTTPException(
             status_code=400,
-            detail="Este email já está cadastrado."
+            detail="Este email jÃ¡ estÃ¡ cadastrado."
         )
 
     existing_phone = db.query(StudentDB).filter(
@@ -142,7 +142,7 @@ def register(student: Student, request: Request, db: Session = Depends(get_db)):
     if existing_phone:
         raise HTTPException(
             status_code=400,
-            detail="Este telefone já está cadastrado."
+            detail="Este telefone jÃ¡ estÃ¡ cadastrado."
         )
 
     hashed_password = bcrypt.hashpw(
@@ -220,7 +220,7 @@ def get_student(
     if not student:
         raise HTTPException(
             status_code=404,
-            detail="Aluno não encontrado"
+            detail="Aluno nÃ£o encontrado"
         )
 
     return {
@@ -258,7 +258,7 @@ def login(data: Login, request: Request, db: Session = Depends(get_db)):
     if not student:
         raise HTTPException(
             status_code=404,
-            detail="Aluno não encontrado"
+            detail="Aluno nÃ£o encontrado"
         )
 
     if not bcrypt.checkpw(
@@ -286,7 +286,7 @@ def login(data: Login, request: Request, db: Session = Depends(get_db)):
 @_routes.get("/me")
 def me(user=Depends(get_current_user)):
     return {
-        "message": "Usuário autenticado",
+        "message": "UsuÃ¡rio autenticado",
         "user": user
     }
 
@@ -360,7 +360,7 @@ def get_student_progress(
     if not student:
         raise HTTPException(
             status_code=404,
-            detail="Aluno não encontrado"
+            detail="Aluno nÃ£o encontrado"
         )
 
     return {
@@ -451,7 +451,7 @@ def get_student_conversations(
     if not student:
         raise HTTPException(
             status_code=404,
-            detail="Aluno não encontrado"
+            detail="Aluno nÃ£o encontrado"
         )
 
     return {
@@ -565,7 +565,7 @@ def chat(
     if not student:
         raise HTTPException(
             status_code=404,
-            detail="Aluno não encontrado"
+            detail="Aluno nÃ£o encontrado"
         )
 
     answer = generate_ai_answer(
@@ -1012,12 +1012,85 @@ def handle_control_command(student: StudentDB, message: str, db: Session):
     return None
 
 
+def parse_choice_button_message(message: str):
+    match = re.fullmatch(
+        r"__button__:(return|post_lesson):(continue|review|practice|topic|next_preview)::(.+)",
+        message or "",
+        flags=re.DOTALL,
+    )
+    if not match:
+        return None
+    return {
+        "context": match.group(1),
+        "choice": match.group(2),
+        "title": match.group(3).strip(),
+    }
+
+
+def handle_choice_button(student: StudentDB, button_choice: dict, db: Session):
+    choice = button_choice["choice"]
+
+    if choice == "review":
+        return build_review_message(student, db)
+
+    if choice == "topic":
+        return (
+            "Combinado. Qual tema voce quer praticar agora?\n\n"
+            "Pode ser: viagem, trabalho, futuro, entrevista ou pronuncia."
+        )
+
+    if choice == "next_preview":
+        return build_next_lesson_preview(student, db)
+
+    if choice == "practice":
+        return generate_ai_answer(
+            student=student,
+            question=button_choice["title"],
+            db=db,
+            ai_question=(
+                "[Internal instruction: the student tapped a post-lesson button to practice "
+                "conversation. Start a tiny conversation practice connected to the student's "
+                "level, interests, and recent lesson. Ask exactly one short question. For Basic "
+                "students, explain in Portuguese and keep the English sentence simple.]"
+            ),
+        )
+
+    if choice == "continue":
+        if student.current_stage == 7 and is_lesson_completed(student):
+            return start_guided_lesson(student, db, mode="manual")
+
+        if student.current_stage == 7:
+            resumed_answer = resume_stuck_guided_lesson(
+                student,
+                "continuar aula guiada",
+                db,
+            )
+            if resumed_answer is not None:
+                return resumed_answer
+
+            return generate_ai_answer(
+                student=student,
+                question=button_choice["title"],
+                db=db,
+                ai_question=(
+                    "[Internal instruction: the student tapped a return button to continue "
+                    "the current guided lesson. Continue from the saved lesson stage. Do not "
+                    "restart onboarding and do not open a free chat. Ask exactly one next "
+                    "practice question.]"
+                ),
+            )
+
+        return recover_student_flow(student, db)
+
+    return None
+
+
 def recover_student_flow(student: StudentDB, db: Session):
     if not (student.name or "").strip():
         student.current_stage = 2
         db.commit()
         return (
-            "Tive um problema aqui. Vou retomar com você do ponto certo.\n\n"
+            "Tive um problema aqui. Vou retomar com vocÃª do ponto certo.\n\n"
             "Primeiro, qual e o seu nome?"
         )
 
@@ -1025,7 +1098,7 @@ def recover_student_flow(student: StudentDB, db: Session):
         student.current_stage = 3
         db.commit()
         return (
-            "Tive um problema aqui. Vou retomar com você do ponto certo.\n\n"
+            "Tive um problema aqui. Vou retomar com vocÃª do ponto certo.\n\n"
             "Me conta com suas palavras: por que voce quer aprender ingles?"
         )
 
@@ -1033,7 +1106,7 @@ def recover_student_flow(student: StudentDB, db: Session):
         student.current_stage = 35
         db.commit()
         return (
-            "Tive um problema aqui. Vou retomar com você do ponto certo.\n\n"
+            "Tive um problema aqui. Vou retomar com vocÃª do ponto certo.\n\n"
             "Me conta do que voce gosta para eu personalizar suas aulas."
         )
 
@@ -1041,7 +1114,7 @@ def recover_student_flow(student: StudentDB, db: Session):
         student.current_stage = 4
         db.commit()
         return (
-            "Tive um problema aqui. Vou retomar com você do ponto certo.\n\n"
+            "Tive um problema aqui. Vou retomar com vocÃª do ponto certo.\n\n"
             "Voce ja estudou ingles antes, mesmo que por pouco tempo?"
         )
 
@@ -1049,14 +1122,14 @@ def recover_student_flow(student: StudentDB, db: Session):
         student.current_stage = 70
         db.commit()
         return (
-            "Tive um problema aqui. Vou retomar com você do ponto certo.\n\n"
+            "Tive um problema aqui. Vou retomar com vocÃª do ponto certo.\n\n"
             "Qual horario voce prefere para receber sua aula diaria?"
         )
 
     student.current_stage = 7
     db.commit()
     return (
-        "Tive um problema aqui. Vou retomar com você do ponto certo.\n\n"
+        "Tive um problema aqui. Vou retomar com vocÃª do ponto certo.\n\n"
         "Quando quiser continuar, me mande: vamos comecar."
     )
 
@@ -1118,11 +1191,11 @@ def build_audio_replay(student: StudentDB, db: Session):
         phrases = extract_english_phrases_for_audio(conversation.answer or "")
         if phrases:
             return (
-                "Claro, vou repetir o áudio da última frase praticada.\n\n"
+                "Claro, vou repetir o Ã¡udio da Ãºltima frase praticada.\n\n"
                 "Repeat after me:\n" + "\n".join(phrases[:3])
             )
 
-    return "Claro. Qual frase em inglês você quer que eu repita em áudio?"
+    return "Claro. Qual frase em inglÃªs vocÃª quer que eu repita em Ã¡udio?"
 
 
 def process_whatsapp_message(phone: str, message: str, db: Session):
@@ -1133,6 +1206,12 @@ def process_whatsapp_message(phone: str, message: str, db: Session):
     ):
         student.preferred_language = "Portuguese"
         db.commit()
+
+    choice_button = parse_choice_button_message(message)
+    if choice_button:
+        choice_reply = handle_choice_button(student, choice_button, db)
+        if choice_reply:
+            return choice_reply
 
     practice_choice = parse_practice_button_message(message)
 
@@ -1882,7 +1961,7 @@ def assessment(
     if not student:
         raise HTTPException(
             status_code=404,
-            detail="Aluno não encontrado"
+            detail="Aluno nÃ£o encontrado"
         )
 
     client = get_openai_client()

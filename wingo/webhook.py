@@ -37,6 +37,21 @@ DEFAULT_REPLY_DELAY_SECONDS = 1.2
 MAX_REPLY_DELAY_SECONDS = 8.0
 
 
+def build_return_choice_buttons() -> dict:
+    return {
+        "type": "buttons",
+        "body": (
+            "Que bom que você está de volta! Quer continuar de onde paramos "
+            "ou prefere escolher outro caminho agora?"
+        ),
+        "buttons": [
+            {"id": "return:continue", "title": "Continuar aula"},
+            {"id": "return:review", "title": "Revisar"},
+            {"id": "return:topic", "title": "Mudar tema"},
+        ],
+    }
+
+
 def is_plain_greeting(message: str) -> bool:
     normalized = (message or "").strip().lower()
     normalized = normalized.strip("!.? ")
@@ -273,10 +288,7 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
         replies = reply if isinstance(reply, list) else [reply]
         if returning_after_break and not is_plain_greeting(message):
             replies = [
-                (
-                    "Que bom que você está de volta! Vamos continuar de onde paramos "
-                    "ou você quer falar de outro assunto?"
-                ),
+                build_return_choice_buttons(),
                 *replies,
             ]
         if pronunciation_feedback:

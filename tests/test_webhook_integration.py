@@ -1,4 +1,4 @@
-import asyncio
+﻿import asyncio
 import hashlib
 import hmac
 import json
@@ -151,7 +151,12 @@ class WebhookIntegrationTests(unittest.TestCase):
             self.receive(text_payload(message_id="wamid.returning", text="vamos continuar"))
 
         self.assertEqual(len(self.sent), 2)
-        self.assertIn("Que bom que você está de volta", self.sent[0][1])
+        self.assertEqual(self.sent[0][1]["type"], "buttons")
+        self.assertIn("Que bom que", self.sent[0][1]["body"])
+        self.assertEqual(
+            [button["id"] for button in self.sent[0][1]["buttons"]],
+            ["return:continue", "return:review", "return:topic"],
+        )
         self.assertEqual(self.sent[1][1], "first reply")
 
     def test_plain_greeting_after_break_does_not_send_duplicate_return_prompt(self):

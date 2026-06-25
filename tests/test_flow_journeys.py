@@ -264,9 +264,9 @@ class FlowJourneyTests(unittest.TestCase):
         )
         self.db.commit()
 
-        reply = self.send(student, "manda o áudio de novo")
+        reply = self.send(student, "manda o audio de novo")
 
-        self.assertIn("vou repetir o áudio", reply)
+        self.assertIn("vou repetir", main.normalize_intent_text(reply))
         self.assertIn("I am studying English", reply)
 
     def test_chat_abbreviations_are_normalized_for_intents(self):
@@ -300,7 +300,7 @@ class FlowJourneyTests(unittest.TestCase):
 
         self.assertEqual(
             polished,
-            "Ótimo! Você chegou ao próximo nível de inglês. Quer áudio e exercícios?",
+            "\u00d3timo! Voc\u00ea chegou ao pr\u00f3ximo n\u00edvel de ingl\u00eas. Quer \u00e1udio e exerc\u00edcios?",
         )
 
     def test_bot_mode_answers_without_changing_state(self):
@@ -319,6 +319,61 @@ class FlowJourneyTests(unittest.TestCase):
         self.assertEqual(student.lesson_stage, "completed")
         self.assertEqual(student.xp, 12)
         answer.assert_called_once()
+
+    def test_post_lesson_feedback_uses_choice_buttons(self):
+        student = self.create_student(
+            stage=7,
+            assessment_completed="Yes",
+            lesson_stage="completed",
+        )
+        self.db.add(
+            LessonSessionDB(
+                student_id=student.id,
+                lesson_number=1,
+                lesson_title="Greetings",
+                status="completed",
+                summary="Aula concluida: Greetings.",
+            )
+        )
+        self.db.commit()
+
+        with patch.object(main, "build_next_lesson_preview", return_value="Proxima aula: Introductions"):
+            reply = main.build_post_lesson_feedback_message(student, self.db)
+
+        self.assertEqual(reply["type"], "buttons")
+        self.assertIn("Fechamento da aula", reply["body"])
+        self.assertEqual(
+            [button["id"] for button in reply["buttons"]],
+            ["post_lesson:review", "post_lesson:practice", "post_lesson:next_preview"],
+        )
+
+    def test_return_choice_buttons_are_handled_without_free_text_guessing(self):
+        student = self.create_student(
+            stage=7,
+            assessment_completed="Yes",
+            schedule_completed="Yes",
+            lesson_stage="completed",
+        )
+
+        review = self.send(student, "__button__:return:review::Revisar")
+        topic = self.send(student, "__button__:return:topic::Mudar tema")
+
+        self.assertIn("Vamos revisar", review)
+        self.assertIn("Greetings", review)
+
+    def test_post_lesson_practice_button_starts_tiny_conversation(self):
+        student = self.create_student(
+            stage=7,
+            assessment_completed="Yes",
+            schedule_completed="Yes",
+            lesson_stage="completed",
+        )
+
+        with patch.object(main, "generate_ai_answer", return_value="Pergunta curta.") as answer:
+            reply = self.send(student, "__button__:post_lesson:practice::Praticar conversa")
+
+        self.assertEqual(reply, "Pergunta curta.")
+        self.assertIn("post-lesson button", answer.call_args.kwargs["ai_question"])
 
     def test_basic_levels_always_use_portuguese_guidance(self):
         for level in ("Basic", "Basic 2"):

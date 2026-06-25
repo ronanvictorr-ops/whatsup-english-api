@@ -871,7 +871,7 @@ def build_post_lesson_feedback_message(student: StudentDB, db: Session):
     review_text = "\n".join(review_lines) if review_lines else "- Vamos revisar as frases principais da aula."
     next_hook = build_next_lesson_preview(student, db, closing_hook=True)
 
-    return (
+    body = (
         "Fechamento da aula de hoje:\n\n"
         f"{lesson_focus}\n\n"
         "Voce praticou:\n"
@@ -881,8 +881,15 @@ def build_post_lesson_feedback_message(student: StudentDB, db: Session):
         "Para revisar depois:\n"
         f"{review_text}\n\n"
         f"{next_hook}\n\n"
-        "De 0 a 10, quanto essa aula te ajudou hoje?"
+        "De 0 a 10, quanto essa aula te ajudou hoje?\n\n"
+        "Se preferir, toque em uma opcao para seguir agora:"
     )
+
+    return {"type": "buttons", "body": body, "buttons": [
+        {"id": "post_lesson:review", "title": "Revisar"},
+        {"id": "post_lesson:practice", "title": "Praticar conversa"},
+        {"id": "post_lesson:next_preview", "title": "Ver proxima"},
+    ]}
 
 
 def get_next_lesson_for_preview(student: StudentDB):
@@ -3336,7 +3343,6 @@ def start_guided_lesson(student: StudentDB, db: Session, mode: str):
 
     if previous_session:
         return build_previous_lesson_review(student, db)
-
     return build_lesson_opening_replies(student, db)
 
 
