@@ -518,9 +518,32 @@ class FlowJourneyTests(unittest.TestCase):
         answer.assert_not_called()
         self.assertIn("esta correto", reply)
         self.assertIn("Hi e mais casual", reply)
-        self.assertIn("Meu nome e Ana", reply)
-        self.assertNotIn("Tive um problema", reply)
-        self.assertEqual(student.lesson_stage, "short_explanation")
+
+    def test_greetings_intro_sequence_completes_without_recovery_loop(self):
+        student = self.create_student(
+            stage=7,
+            assessment_completed="Yes",
+            schedule_completed="Yes",
+            current_lesson=1,
+            lesson_stage="context_question",
+        )
+
+        with patch.object(main, "generate_ai_answer") as answer:
+            hello_reply = self.send(student, "Hello")
+            name_reply = self.send(student, "My name is Ana")
+            question_reply = self.send(student, "What's your name?")
+            final_reply = self.send(student, "My name is Ronan")
+
+        answer.assert_not_called()
+        all_replies = "\n".join([hello_reply, name_reply, question_reply, final_reply])
+        self.assertNotIn("Tive um problema", all_replies)
+        self.assertIn("Hi e mais casual", hello_reply)
+        self.assertIn("funciona para se apresentar", name_reply)
+        self.assertIn("What's your name", question_reply)
+        self.assertIn("Hoje voce praticou", final_reply)
+        self.assertEqual(student.lesson_stage, "completed")
+        self.assertEqual(student.messages_in_current_lesson, 0)
+        self.assertEqual(student.xp, 10)
 
     def test_hint_button_gives_short_guided_hint(self):
         student = self.create_student(
