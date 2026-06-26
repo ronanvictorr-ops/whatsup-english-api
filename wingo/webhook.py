@@ -37,7 +37,17 @@ DEFAULT_REPLY_DELAY_SECONDS = 1.2
 MAX_REPLY_DELAY_SECONDS = 8.0
 
 
-def build_return_choice_buttons() -> dict:
+def build_return_choice_buttons(student: StudentDB | None = None, db: Session | None = None) -> dict:
+    if student is not None and db is not None:
+        try:
+            return _resolve("build_smart_return_prompt")(student, db)
+        except Exception as error:
+            log_event(
+                "smart_return_prompt_failed",
+                student_id=getattr(student, "id", None),
+                error=str(error),
+            )
+
     return {
         "type": "buttons",
         "body": (
@@ -288,7 +298,7 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
         replies = reply if isinstance(reply, list) else [reply]
         if returning_after_break and not is_plain_greeting(message):
             replies = [
-                build_return_choice_buttons(),
+                build_return_choice_buttons(student, db),
                 *replies,
             ]
         if pronunciation_feedback:

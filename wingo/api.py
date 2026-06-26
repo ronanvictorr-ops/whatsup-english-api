@@ -908,6 +908,78 @@ def build_review_message(student: StudentDB, db: Session):
     return "\n".join(lines)
 
 
+def get_latest_personal_note(student: StudentDB):
+    notes = list(getattr(student, "personal_notes", []) or [])
+    if not notes:
+        return None
+    return sorted(notes, key=lambda note: note.id or 0, reverse=True)[0]
+
+
+def build_smart_return_prompt(student: StudentDB, db: Session):
+    lesson = get_current_lesson(student)
+    recent_records = get_recent_learning_records(student.id, db, limit=1)
+    latest_note = get_latest_personal_note(student)
+
+    if student.current_stage == 7 and not is_lesson_completed(student):
+        return {
+            "type": "buttons",
+            "body": (
+                "Que bom que voce voltou. Podemos continuar a aula atual "
+                f"({format_lesson_title(lesson)}), revisar um ponto recente "
+                "ou fazer uma pratica rapidinha de 2 minutos."
+            ),
+            "buttons": [
+                {"id": "return:continue", "title": "Continuar aula"},
+                {"id": "return:review", "title": "Revisar"},
+                {"id": "return:practice", "title": "Mini pratica"},
+            ],
+        }
+
+    if recent_records:
+        record = recent_records[0]
+        point = record.corrected_text or record.explanation or record.topic or "um ponto recente"
+        return {
+            "type": "buttons",
+            "body": (
+                "Que bom que voce voltou. Antes de seguir, vale revisar este ponto: "
+                f"{point[:140]}\n\nO que prefere fazer agora?"
+            ),
+            "buttons": [
+                {"id": "return:review", "title": "Revisar erro"},
+                {"id": "return:practice", "title": "Mini pratica"},
+                {"id": "return:continue", "title": "Continuar aula"},
+            ],
+        }
+
+    if latest_note:
+        return {
+            "type": "buttons",
+            "body": (
+                "Que bom que voce voltou. Lembrei de uma coisa que voce comentou: "
+                f"{latest_note.note[:140]}\n\nQuer me contar como foi ou prefere ir direto "
+                "para a aula?"
+            ),
+            "buttons": [
+                {"id": "return:personal", "title": "Contar agora"},
+                {"id": "return:continue", "title": "Continuar aula"},
+                {"id": "return:practice", "title": "Mini pratica"},
+            ],
+        }
+
+    return {
+        "type": "buttons",
+        "body": (
+            "Que bom que voce voltou. Tenho uma pratica de 2 minutos pronta para aquecer, "
+            "mas tambem posso continuar a aula ou mudar de tema."
+        ),
+        "buttons": [
+            {"id": "return:practice", "title": "Mini pratica"},
+            {"id": "return:continue", "title": "Continuar aula"},
+            {"id": "return:topic", "title": "Mudar tema"},
+        ],
+    }
+
+
 def reset_student_for_beta(student: StudentDB, db: Session):
     db.query(ConversationDB).filter(ConversationDB.student_id == student.id).delete()
     db.query(LearningRecordDB).filter(LearningRecordDB.student_id == student.id).delete()
@@ -1014,7 +1086,7 @@ def handle_control_command(student: StudentDB, message: str, db: Session):
 
 def parse_choice_button_message(message: str):
     match = re.fullmatch(
-        r"__button__:(return|post_lesson):(continue|review|practice|topic|next_preview)::(.+)",
+        r"__button__:(return|post_lesson):(continue|review|practice|personal|topic|next_preview)::(.+)",
         message or "",
         flags=re.DOTALL,
     )
@@ -1052,6 +1124,19 @@ def handle_choice_button(student: StudentDB, button_choice: dict, db: Session):
                 "conversation. Start a tiny conversation practice connected to the student's "
                 "level, interests, and recent lesson. Ask exactly one short question. For Basic "
                 "students, explain in Portuguese and keep the English sentence simple.]"
+            ),
+        )
+
+    if choice == "personal":
+        return generate_ai_answer(
+            student=student,
+            question=button_choice["title"],
+            db=db,
+            ai_question=(
+                "[Internal instruction: the student tapped a return button to talk about "
+                "a saved personal memory. Use the personal relationship memory naturally. "
+                "Ask one warm follow-up question, then gently connect back to English "
+                "practice. For Basic students, speak mainly in Portuguese.]"
             ),
         )
 
@@ -2184,7 +2269,7 @@ def dashboard_operations(
 
 
 _DEPENDENCY_NAMES = ('AssessmentRequest', 'CORRECTION_RUBRIC', 'CURRICULUM', 'CURRICULUM_BY_NUMBER', 'ChatRequest', 'Conversation', 'ConversationDB', 'DAILY_WORD_TIME', 'DASHBOARD_DIR', 'FileResponse', 'HTTPException', 'LESSON_COMPLETED_STAGE', 'LESSON_STAGES', 'LearningRecord', 'LearningRecordDB', 'LessonSessionDB', 'Login', 'OperationalMetricDB', 'OutboundDeliveryDB', 'PLACEMENT_RUBRIC', 'PRODUCT_PLANS', 'PRONUNCIATION_RUBRIC', 'ProcessedWebhookMessageDB', 'Progress', 'ProgressDB', 'PronunciationAttemptDB', 'QuizAnswer', 'SALES_DIR', 'SPACED_REVIEW_INTERVALS', 'Session', 'StateTransitionDB', 'Student', 'StudentDB', 'WEEKLY_QUIZ_DAY', 'WEEKLY_QUIZ_TIME', 'WEEKLY_REPORT_DAY', 'WEEKLY_REPORT_TIME', 'add_onboarding_note', 'bcrypt', 'build_deterministic_guided_reply', 'build_intro_video_reply', 'build_lesson_opening_replies', 'build_next_lesson_preview', 'build_past_simple_finish_quiz', 'build_past_simple_work_quiz', 'build_post_lesson_feedback_message', 'build_quiz_correct_reply', 'build_quiz_retry', 'build_weekly_progress_report', 'calculate_learning_xp', 'call_with_retry', 'create_access_token', 'datetime', 'detect_control_command', 'detect_language_switch_request', 'detect_requested_level_change', 'estimate_level_from_study_history', 'evaluate_placement_test_details', 'evaluate_placement_test_details_fallback', 'extract_english_phrases_for_audio', 'extract_name_candidate', 'format_lesson_schedule', 'format_lesson_title', 'format_placement_feedback', 'func', 'generate_ai_answer', 'generate_writing_practice_feedback', 'get_advancement_criterion', 'get_current_lesson', 'get_latest_lesson_session', 'get_lesson_design', 'get_lesson_stage', 'get_openai_client', 'get_placement_questions', 'get_quiz_interface_language', 'get_start_lesson_for_level', 'get_student_lesson_schedule', 'has_recent_past_simple_context', 'is_affirmative', 'is_basic_level', 'is_exercise_request', 'is_lesson_completed', 'is_lesson_schedule_question', 'is_lesson_start_request', 'is_level_retest_request', 'is_mixed_language_message', 'is_negative', 'is_next_lesson_question', 'is_number_without_time_unit', 'is_off_topic_during_assessment', 'is_probable_learning_goal', 'is_probable_person_name', 'is_ready_for_lesson', 'is_schedule_change_request', 'is_unclear_study_experience', 'is_unclear_yes_no', 'is_valid_placement_answer', 'json', 'looks_like_name_correction', 'normalize_intent_text', 'normalize_language_preference', 'normalize_whatsapp_phone_for_send', 'os', 'parse_lesson_schedule', 'parse_practice_button_message', 'parse_quiz_button_message', 'repeat_placement_question', 'require_student_access', 'reset_lesson_flow', 'resume_stuck_guided_lesson', 'save_lesson_feedback_if_expected', 'start_guided_lesson', 'text', 'timedelta', 'update_lesson_engagement', 'wants_portuguese_mode', 'whatsapp_phone_variants')
-_EXPORTED_NAMES = ('assessment', 'build_dashboard_student', 'build_progress_message', 'build_review_message', 'build_status_message', 'chat', 'create_learning_record', 'dashboard_operations', 'dashboard_page', 'dashboard_student', 'dashboard_teacher', 'get_completed_lessons_count', 'get_conversations', 'get_learning_mode_label', 'get_or_create_whatsapp_student', 'get_pedagogy_lesson', 'get_pedagogy_lessons', 'get_pedagogy_overview', 'get_product_plans', 'get_progress', 'get_recent_learning_records', 'get_student', 'get_student_conversations', 'get_student_learning_records', 'get_student_lesson_schedule_endpoint', 'get_student_progress', 'get_students', 'get_students_dashboard', 'handle_control_command', 'login', 'me', 'operational_health', 'operational_metrics', 'process_whatsapp_message', 'quiz', 'ranking', 'recent_state_transitions', 'recover_student_flow', 'register', 'reset_student_for_beta', 'sales_page', 'save_conversation', 'save_progress', 'update_student_lesson_schedule')
+_EXPORTED_NAMES = ('assessment', 'build_dashboard_student', 'build_progress_message', 'build_review_message', 'build_smart_return_prompt', 'build_status_message', 'chat', 'create_learning_record', 'dashboard_operations', 'dashboard_page', 'dashboard_student', 'dashboard_teacher', 'get_completed_lessons_count', 'get_conversations', 'get_learning_mode_label', 'get_or_create_whatsapp_student', 'get_pedagogy_lesson', 'get_pedagogy_lessons', 'get_pedagogy_overview', 'get_product_plans', 'get_progress', 'get_recent_learning_records', 'get_student', 'get_student_conversations', 'get_student_learning_records', 'get_student_lesson_schedule_endpoint', 'get_student_progress', 'get_students', 'get_students_dashboard', 'handle_control_command', 'login', 'me', 'operational_health', 'operational_metrics', 'process_whatsapp_message', 'quiz', 'ranking', 'recent_state_transitions', 'recover_student_flow', 'register', 'reset_student_for_beta', 'sales_page', 'save_conversation', 'save_progress', 'update_student_lesson_schedule')
 _DYNAMIC_CALLABLES = {
     "call_with_retry",
     "evaluate_placement_test_details",

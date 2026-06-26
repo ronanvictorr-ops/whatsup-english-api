@@ -7,7 +7,7 @@ from sqlalchemy.orm import sessionmaker
 
 import main
 from database import Base
-from models import ConversationDB, LessonSessionDB, StudentDB
+from models import ConversationDB, LearningRecordDB, LessonSessionDB, PersonalNoteDB, StudentDB
 
 
 class FlowJourneyTests(unittest.TestCase):
@@ -360,6 +360,69 @@ class FlowJourneyTests(unittest.TestCase):
 
         self.assertIn("Vamos revisar", review)
         self.assertIn("Greetings", review)
+
+    def test_smart_return_prompt_continues_unfinished_lesson(self):
+        student = self.create_student(
+            stage=7,
+            assessment_completed="Yes",
+            schedule_completed="Yes",
+            lesson_stage="short_explanation",
+        )
+
+        prompt = main.build_smart_return_prompt(student, self.db)
+
+        self.assertEqual(prompt["type"], "buttons")
+        self.assertIn("continuar a aula atual", prompt["body"])
+        self.assertEqual(
+            [button["id"] for button in prompt["buttons"]],
+            ["return:continue", "return:review", "return:practice"],
+        )
+
+    def test_smart_return_prompt_prioritizes_recent_error(self):
+        student = self.create_student(
+            stage=7,
+            assessment_completed="Yes",
+            schedule_completed="Yes",
+            lesson_stage="completed",
+        )
+        self.db.add(
+            LearningRecordDB(
+                student_id=student.id,
+                skill="grammar",
+                topic="Past Simple",
+                original_text="I go yesterday",
+                corrected_text="I went yesterday.",
+                explanation="Use went for the past of go.",
+            )
+        )
+        self.db.commit()
+
+        prompt = main.build_smart_return_prompt(student, self.db)
+
+        self.assertIn("I went yesterday.", prompt["body"])
+        self.assertEqual(prompt["buttons"][0]["id"], "return:review")
+
+    def test_smart_return_prompt_uses_personal_memory_when_no_error(self):
+        student = self.create_student(
+            stage=7,
+            assessment_completed="Yes",
+            schedule_completed="Yes",
+            lesson_stage="completed",
+        )
+        self.db.add(
+            PersonalNoteDB(
+                student_id=student.id,
+                category="travel",
+                note="o aluno ia viajar para a Bahia",
+            )
+        )
+        self.db.commit()
+        self.db.refresh(student)
+
+        prompt = main.build_smart_return_prompt(student, self.db)
+
+        self.assertIn("Bahia", prompt["body"])
+        self.assertEqual(prompt["buttons"][0]["id"], "return:personal")
 
     def test_post_lesson_practice_button_starts_tiny_conversation(self):
         student = self.create_student(

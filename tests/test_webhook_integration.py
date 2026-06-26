@@ -155,7 +155,7 @@ class WebhookIntegrationTests(unittest.TestCase):
         self.assertIn("Que bom que", self.sent[0][1]["body"])
         self.assertEqual(
             [button["id"] for button in self.sent[0][1]["buttons"]],
-            ["return:continue", "return:review", "return:topic"],
+            ["return:practice", "return:continue", "return:topic"],
         )
         self.assertEqual(self.sent[1][1], "first reply")
 
