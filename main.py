@@ -26,7 +26,6 @@ from openai import OpenAI
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from sqlalchemy import func, text
-
 from database import Base, SessionLocal, engine, get_db
 from pedagogy import (
     CORRECTION_RUBRIC,
@@ -43,7 +42,7 @@ from models import (
     LearningRecordDB,
     LessonSessionDB,
     OperationalMetricDB,
-    OutboundDeliveryDB,
+    OutboundDeliveryDB, PersonalNoteDB,
     PronunciationAttemptDB,
     ProcessedWebhookMessageDB,
     ProgressDB,
@@ -3896,6 +3895,7 @@ api_dependencies = {
         "PLACEMENT_RUBRIC": PLACEMENT_RUBRIC,
         "PRODUCT_PLANS": PRODUCT_PLANS,
         "PRONUNCIATION_RUBRIC": PRONUNCIATION_RUBRIC,
+        "PersonalNoteDB": PersonalNoteDB,
         "ProcessedWebhookMessageDB": ProcessedWebhookMessageDB,
         "Progress": Progress,
         "ProgressDB": ProgressDB,
