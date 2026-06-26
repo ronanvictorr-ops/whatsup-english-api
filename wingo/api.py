@@ -1283,6 +1283,79 @@ def build_audio_replay(student: StudentDB, db: Session):
     return "Claro. Qual frase em inglÃªs vocÃª quer que eu repita em Ã¡udio?"
 
 
+def is_short_time_request(message: str):
+    text = normalize_intent_text(message)
+    return any(
+        phrase in text
+        for phrase in {
+            "so 2 min",
+            "so dois min",
+            "tenho 2 min",
+            "tenho dois min",
+            "rapidinho",
+            "rapido",
+            "hoje nao posso muito",
+            "nao posso muito hoje",
+            "pouco tempo",
+            "estou sem tempo",
+            "to sem tempo",
+            "correndo",
+            "bem rapido",
+        }
+    )
+
+
+def get_recent_example_context(student: StudentDB, db: Session, limit: int = 8):
+    recent = (
+        db.query(ConversationDB)
+        .filter(ConversationDB.student_id == student.id)
+        .order_by(ConversationDB.id.desc())
+        .limit(limit)
+        .all()
+    )
+    snippets = []
+    for conversation in recent:
+        text = f"{conversation.question or ''} {conversation.answer or ''}"
+        text = re.sub(r"\s+", " ", text).strip()
+        if text:
+            snippets.append(text[:180])
+
+    if not snippets:
+        return "No recent examples saved yet."
+
+    return "\n".join(f"- {snippet}" for snippet in snippets[:5])
+
+
+def build_short_time_micro_lesson(student: StudentDB, message: str, db: Session):
+    student.current_stage = 7
+    db.commit()
+    return generate_ai_answer(
+        student=student,
+        question=message,
+        db=db,
+        ai_question=(
+            "[Internal instruction: the student said they have very little time. "
+            "Switch to a 2-minute micro-lesson. Do not send a full lesson, do not ask "
+            "multiple questions, and do not start a long explanation. Send at most 70 words. "
+            "Use exactly: one warm acknowledgement, one tiny useful English example, and "
+            "one short exercise for the student to answer. For Basic students, explain mainly "
+            "in Portuguese. Avoid repeating any recent examples listed below.]\n\n"
+            f"Recent examples to avoid:\n{get_recent_example_context(student, db)}\n\n"
+            f"Student message: {message}"
+        ),
+    )
+
+
+def build_varied_past_simple_quiz(student: StudentDB, prefix: str, language: str, db: Session):
+    recent = get_recent_example_context(student, db).lower()
+    if any(token in recent for token in ("yesterday, i ___ on a project", "work -> worked", "worked")):
+        return build_past_simple_finish_quiz(prefix, language)
+    completed_blocks = ((student.xp or 0) // 6) % 2
+    if completed_blocks == 1:
+        return build_past_simple_finish_quiz(prefix, language)
+    return build_past_simple_work_quiz(prefix, language)
+
+
 def process_whatsapp_message(phone: str, message: str, db: Session):
     student = get_or_create_whatsapp_student(phone, db)
     if (
@@ -1319,10 +1392,7 @@ def process_whatsapp_message(phone: str, message: str, db: Session):
         student.current_stage = 7
         db.commit()
         prefix = "New quiz block - Question 1 of 3" if practice_choice["language"] == "en" else "Novo bloco de quizzes - Pergunta 1 de 3"
-        completed_blocks = ((student.xp or 0) // 6) % 2
-        if completed_blocks == 0:
-            return build_past_simple_work_quiz(prefix, practice_choice["language"])
-        return build_past_simple_finish_quiz(prefix, practice_choice["language"])
+        return build_varied_past_simple_quiz(student, prefix, practice_choice["language"], db)
 
     quiz_answer = parse_quiz_button_message(message)
 
@@ -1343,6 +1413,13 @@ def process_whatsapp_message(phone: str, message: str, db: Session):
     if student.current_stage != 0:
         student.last_activity = datetime.utcnow()
         db.commit()
+
+        if (
+            is_short_time_request(message)
+            and getattr(student, "assessment_completed", "No") == "Yes"
+            and getattr(student, "schedule_completed", "No") == "Yes"
+        ):
+            return build_short_time_micro_lesson(student, message, db)
 
         command_reply = handle_control_command(student, message, db)
         if command_reply:
@@ -1800,6 +1877,7 @@ def process_whatsapp_message(phone: str, message: str, db: Session):
                     "Acknowledge the topic, give one fresh level-appropriate example that does not "
                     "repeat recent conversation examples, then ask exactly one short exercise about it. "
                     "Use Portuguese guidance for Basic and Basic 2 students.]\n\n"
+                    f"Recent examples to avoid:\n{get_recent_example_context(student, db)}\n\n"
                     f"Student message: {message}"
                 ),
             )
@@ -1815,7 +1893,7 @@ def process_whatsapp_message(phone: str, message: str, db: Session):
                 if quiz_language == "en"
                 else "Vamos praticar o Past Simple. Escolha a resposta correta. Pergunta 1 de 3"
             )
-            return build_past_simple_work_quiz(intro, quiz_language)
+            return build_varied_past_simple_quiz(student, intro, quiz_language, db)
 
         if is_schedule_change_request(message):
             student.current_stage = 70

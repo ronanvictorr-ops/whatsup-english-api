@@ -438,6 +438,50 @@ class FlowJourneyTests(unittest.TestCase):
         self.assertEqual(reply, "Pergunta curta.")
         self.assertIn("post-lesson button", answer.call_args.kwargs["ai_question"])
 
+    def test_short_time_request_switches_to_two_minute_micro_lesson(self):
+        student = self.create_student(
+            stage=7,
+            assessment_completed="Yes",
+            schedule_completed="Yes",
+        )
+        self.db.add(
+            ConversationDB(
+                student_id=student.id,
+                question="vamos praticar",
+                answer="Example: I cooked dinner yesterday.",
+            )
+        )
+        self.db.commit()
+
+        with patch.object(main, "generate_ai_answer", return_value="Microaula curta.") as answer:
+            reply = self.send(student, "hoje nao posso muito, so 2 min")
+
+        self.assertEqual(reply, "Microaula curta.")
+        ai_question = answer.call_args.kwargs["ai_question"]
+        self.assertIn("2-minute micro-lesson", ai_question)
+        self.assertIn("I cooked dinner yesterday", ai_question)
+
+    def test_more_quiz_avoids_recent_first_example(self):
+        student = self.create_student(
+            stage=7,
+            assessment_completed="Yes",
+            schedule_completed="Yes",
+        )
+        self.db.add(
+            ConversationDB(
+                student_id=student.id,
+                question="quiz anterior",
+                answer="Yesterday, I ___ on a project. Work -> worked.",
+            )
+        )
+        self.db.commit()
+
+        reply = self.send(student, "__button__:practice:more_quiz:pt::Mais quizzes")
+
+        self.assertEqual(reply["type"], "buttons")
+        self.assertIn("They ___ their homework", reply["body"])
+        self.assertNotIn("Yesterday, I ___ on a project", reply["body"])
+
     def test_basic_levels_always_use_portuguese_guidance(self):
         for level in ("Basic", "Basic 2"):
             instruction = main.get_language_instruction("English", level)
