@@ -486,6 +486,38 @@ class FlowJourneyTests(unittest.TestCase):
         self.assertIn("They ___ their homework", reply["body"])
         self.assertNotIn("Yesterday, I ___ on a project", reply["body"])
 
+    def test_stuck_basic_student_gets_reformulation_example_and_hint_button(self):
+        student = self.create_student(
+            stage=7,
+            assessment_completed="Yes",
+            schedule_completed="Yes",
+            current_lesson=1,
+            lesson_stage="context_question",
+        )
+
+        reply = self.send(student, "nao entendi")
+
+        self.assertEqual(reply["type"], "buttons")
+        self.assertIn("Vou reformular", reply["body"])
+        self.assertIn("Exemplo: Hello.", reply["body"])
+        self.assertEqual(reply["buttons"][0]["id"], "lesson:hint")
+        self.assertEqual(reply["buttons"][0]["title"], "Me de uma dica")
+
+    def test_hint_button_gives_short_guided_hint(self):
+        student = self.create_student(
+            stage=7,
+            assessment_completed="Yes",
+            schedule_completed="Yes",
+            lesson_stage="context_question",
+        )
+
+        with patch.object(main, "generate_ai_answer", return_value="Dica curta.") as answer:
+            reply = self.send(student, "__button__:lesson:hint::Me de uma dica")
+
+        self.assertEqual(reply, "Dica curta.")
+        self.assertIn("hint button", answer.call_args.kwargs["ai_question"])
+        self.assertIn("under 70 words", answer.call_args.kwargs["ai_question"])
+
     def test_basic_levels_always_use_portuguese_guidance(self):
         for level in ("Basic", "Basic 2"):
             instruction = main.get_language_instruction("English", level)

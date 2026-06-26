@@ -1086,7 +1086,7 @@ def handle_control_command(student: StudentDB, message: str, db: Session):
 
 def parse_choice_button_message(message: str):
     match = re.fullmatch(
-        r"__button__:(return|post_lesson):(continue|review|practice|personal|topic|next_preview)::(.+)",
+        r"__button__:(return|post_lesson|lesson):(continue|review|practice|personal|topic|next_preview|hint)::(.+)",
         message or "",
         flags=re.DOTALL,
     )
@@ -1101,6 +1101,21 @@ def parse_choice_button_message(message: str):
 
 def handle_choice_button(student: StudentDB, button_choice: dict, db: Session):
     choice = button_choice["choice"]
+
+    if choice == "hint":
+        lesson = get_current_lesson(student)
+        return generate_ai_answer(
+            student=student,
+            question=button_choice["title"],
+            db=db,
+            ai_question=(
+                "[Internal instruction: the student tapped a hint button because they are stuck. "
+                f"The current lesson is {lesson['title']} and the current stage is {get_lesson_stage(student)}. "
+                "Give one short hint in Portuguese, one tiny English example, and ask the same exercise "
+                "again in simpler words. Do not give the full answer unless the current exercise is only "
+                "a greeting. Keep it under 70 words.]"
+            ),
+        )
 
     if choice == "review":
         return build_review_message(student, db)
@@ -1305,6 +1320,64 @@ def is_short_time_request(message: str):
     )
 
 
+def is_stuck_lesson_answer(message: str):
+    text = normalize_intent_text(message)
+    if not text:
+        return True
+
+    stuck_markers = {
+        "nao sei",
+        "n sei",
+        "sei la",
+        "nao entendi",
+        "n entendi",
+        "entendi nada",
+        "to confuso",
+        "estou confuso",
+        "confuso",
+        "como assim",
+        "me ajuda",
+        "ajuda",
+        "help",
+        "dica",
+        "hint",
+        "???",
+        "?",
+    }
+    return text in stuck_markers or any(marker in text for marker in stuck_markers)
+
+
+def build_stuck_lesson_recovery(student: StudentDB, db: Session):
+    lesson = get_current_lesson(student)
+    stage = get_lesson_stage(student)
+
+    if lesson["title"] == "Greetings":
+        example = "Exemplo: Hello."
+        reformulated = "Vamos bem simples: como voce diria 'Ola' em ingles?"
+    elif lesson["title"] == "Past Simple":
+        example = "Exemplo: Yesterday I studied."
+        reformulated = "Agora tente uma frase curta sobre ontem com 'Yesterday I...'"
+    elif stage == "production":
+        example = "Exemplo: I am studying English."
+        reformulated = "Tente montar uma frase curta em ingles com a ideia da aula."
+    else:
+        example = f"Exemplo ligado a {lesson['title']}: I practice every day."
+        reformulated = "Vamos simplificar: responda com uma frase curta em ingles."
+
+    return {
+        "type": "buttons",
+        "body": (
+            "Sem problema. Vou reformular.\n\n"
+            f"{reformulated}\n\n"
+            f"{example}\n\n"
+            "Pode tentar do seu jeito. Se quiser, toque no botao de dica."
+        ),
+        "buttons": [
+            {"id": "lesson:hint", "title": "Me de uma dica"},
+        ],
+    }
+
+
 def get_recent_example_context(student: StudentDB, db: Session, limit: int = 8):
     recent = (
         db.query(ConversationDB)
@@ -1458,6 +1531,13 @@ def process_whatsapp_message(phone: str, message: str, db: Session):
             and is_next_lesson_question(message)
         ):
             return build_next_lesson_preview(student, db)
+
+        if (
+            student.current_stage == 7
+            and not is_lesson_completed(student)
+            and is_stuck_lesson_answer(message)
+        ):
+            return build_stuck_lesson_recovery(student, db)
 
     if student.current_stage == 999:
         student.last_activity = datetime.utcnow()
