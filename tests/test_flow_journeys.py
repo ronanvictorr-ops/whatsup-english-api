@@ -7,7 +7,7 @@ from sqlalchemy.orm import sessionmaker
 
 import main
 from database import Base
-from models import ConversationDB, LessonSessionDB, StudentDB
+from models import ConversationDB, LearningRecordDB, LessonSessionDB, PersonalNoteDB, StudentDB
 
 
 class FlowJourneyTests(unittest.TestCase):
@@ -58,6 +58,9 @@ class FlowJourneyTests(unittest.TestCase):
         replies = self.send(student, "oi")
         self.assertEqual(student.current_stage, 2)
         self.assertIsInstance(replies, list)
+        self.assertEqual(len(replies), 3)
+        self.assertIn("primeiro contato", replies[1].lower())
+        self.assertIn("nome", replies[2].lower())
 
         invalid_reply = self.send(student, "sim")
         self.assertEqual(student.current_stage, 2)
@@ -261,9 +264,9 @@ class FlowJourneyTests(unittest.TestCase):
         )
         self.db.commit()
 
-        reply = self.send(student, "manda o áudio de novo")
+        reply = self.send(student, "manda o audio de novo")
 
-        self.assertIn("vou repetir o áudio", reply)
+        self.assertIn("vou repetir", main.normalize_intent_text(reply))
         self.assertIn("I am studying English", reply)
 
     def test_chat_abbreviations_are_normalized_for_intents(self):
@@ -297,7 +300,7 @@ class FlowJourneyTests(unittest.TestCase):
 
         self.assertEqual(
             polished,
-            "Ótimo! Você chegou ao próximo nível de inglês. Quer áudio e exercícios?",
+            "\u00d3timo! Voc\u00ea chegou ao pr\u00f3ximo n\u00edvel de ingl\u00eas. Quer \u00e1udio e exerc\u00edcios?",
         )
 
     def test_bot_mode_answers_without_changing_state(self):
@@ -316,6 +319,204 @@ class FlowJourneyTests(unittest.TestCase):
         self.assertEqual(student.lesson_stage, "completed")
         self.assertEqual(student.xp, 12)
         answer.assert_called_once()
+
+    def test_post_lesson_feedback_uses_choice_buttons(self):
+        student = self.create_student(
+            stage=7,
+            assessment_completed="Yes",
+            lesson_stage="completed",
+        )
+        self.db.add(
+            LessonSessionDB(
+                student_id=student.id,
+                lesson_number=1,
+                lesson_title="Greetings",
+                status="completed",
+                summary="Aula concluida: Greetings.",
+            )
+        )
+        self.db.commit()
+
+        with patch.object(main, "build_next_lesson_preview", return_value="Proxima aula: Introductions"):
+            reply = main.build_post_lesson_feedback_message(student, self.db)
+
+        self.assertEqual(reply["type"], "buttons")
+        self.assertIn("Fechamento da aula", reply["body"])
+        self.assertIn("Hoje voce aprendeu", reply["body"])
+        self.assertIn("Sua missao", reply["body"])
+        self.assertIn("Proximo passo", reply["body"])
+        self.assertIn("Pequeno passo, mas passo real", reply["body"])
+        self.assertEqual(
+            [button["id"] for button in reply["buttons"]],
+            ["post_lesson:review", "post_lesson:practice", "post_lesson:next_preview"],
+        )
+
+    def test_return_choice_buttons_are_handled_without_free_text_guessing(self):
+        student = self.create_student(
+            stage=7,
+            assessment_completed="Yes",
+            schedule_completed="Yes",
+            lesson_stage="completed",
+        )
+
+        review = self.send(student, "__button__:return:review::Revisar")
+        topic = self.send(student, "__button__:return:topic::Mudar tema")
+
+        self.assertIn("Vamos revisar", review)
+        self.assertIn("Greetings", review)
+
+    def test_smart_return_prompt_continues_unfinished_lesson(self):
+        student = self.create_student(
+            stage=7,
+            assessment_completed="Yes",
+            schedule_completed="Yes",
+            lesson_stage="short_explanation",
+        )
+
+        prompt = main.build_smart_return_prompt(student, self.db)
+
+        self.assertEqual(prompt["type"], "buttons")
+        self.assertIn("continuar a aula atual", prompt["body"])
+        self.assertEqual(
+            [button["id"] for button in prompt["buttons"]],
+            ["return:continue", "return:review", "return:practice"],
+        )
+
+    def test_smart_return_prompt_prioritizes_recent_error(self):
+        student = self.create_student(
+            stage=7,
+            assessment_completed="Yes",
+            schedule_completed="Yes",
+            lesson_stage="completed",
+        )
+        self.db.add(
+            LearningRecordDB(
+                student_id=student.id,
+                skill="grammar",
+                topic="Past Simple",
+                original_text="I go yesterday",
+                corrected_text="I went yesterday.",
+                explanation="Use went for the past of go.",
+            )
+        )
+        self.db.commit()
+
+        prompt = main.build_smart_return_prompt(student, self.db)
+
+        self.assertIn("I went yesterday.", prompt["body"])
+        self.assertEqual(prompt["buttons"][0]["id"], "return:review")
+
+    def test_smart_return_prompt_uses_personal_memory_when_no_error(self):
+        student = self.create_student(
+            stage=7,
+            assessment_completed="Yes",
+            schedule_completed="Yes",
+            lesson_stage="completed",
+        )
+        self.db.add(
+            PersonalNoteDB(
+                student_id=student.id,
+                category="travel",
+                note="o aluno ia viajar para a Bahia",
+            )
+        )
+        self.db.commit()
+        self.db.refresh(student)
+
+        prompt = main.build_smart_return_prompt(student, self.db)
+
+        self.assertIn("Bahia", prompt["body"])
+        self.assertEqual(prompt["buttons"][0]["id"], "return:personal")
+
+    def test_post_lesson_practice_button_starts_tiny_conversation(self):
+        student = self.create_student(
+            stage=7,
+            assessment_completed="Yes",
+            schedule_completed="Yes",
+            lesson_stage="completed",
+        )
+
+        with patch.object(main, "generate_ai_answer", return_value="Pergunta curta.") as answer:
+            reply = self.send(student, "__button__:post_lesson:practice::Praticar conversa")
+
+        self.assertEqual(reply, "Pergunta curta.")
+        self.assertIn("post-lesson button", answer.call_args.kwargs["ai_question"])
+
+    def test_short_time_request_switches_to_two_minute_micro_lesson(self):
+        student = self.create_student(
+            stage=7,
+            assessment_completed="Yes",
+            schedule_completed="Yes",
+        )
+        self.db.add(
+            ConversationDB(
+                student_id=student.id,
+                question="vamos praticar",
+                answer="Example: I cooked dinner yesterday.",
+            )
+        )
+        self.db.commit()
+
+        with patch.object(main, "generate_ai_answer", return_value="Microaula curta.") as answer:
+            reply = self.send(student, "hoje nao posso muito, so 2 min")
+
+        self.assertEqual(reply, "Microaula curta.")
+        ai_question = answer.call_args.kwargs["ai_question"]
+        self.assertIn("2-minute micro-lesson", ai_question)
+        self.assertIn("I cooked dinner yesterday", ai_question)
+
+    def test_more_quiz_avoids_recent_first_example(self):
+        student = self.create_student(
+            stage=7,
+            assessment_completed="Yes",
+            schedule_completed="Yes",
+        )
+        self.db.add(
+            ConversationDB(
+                student_id=student.id,
+                question="quiz anterior",
+                answer="Yesterday, I ___ on a project. Work -> worked.",
+            )
+        )
+        self.db.commit()
+
+        reply = self.send(student, "__button__:practice:more_quiz:pt::Mais quizzes")
+
+        self.assertEqual(reply["type"], "buttons")
+        self.assertIn("They ___ their homework", reply["body"])
+        self.assertNotIn("Yesterday, I ___ on a project", reply["body"])
+
+    def test_stuck_basic_student_gets_reformulation_example_and_hint_button(self):
+        student = self.create_student(
+            stage=7,
+            assessment_completed="Yes",
+            schedule_completed="Yes",
+            current_lesson=1,
+            lesson_stage="context_question",
+        )
+
+        reply = self.send(student, "nao entendi")
+
+        self.assertEqual(reply["type"], "buttons")
+        self.assertIn("Vou reformular", reply["body"])
+        self.assertIn("Exemplo: Hello.", reply["body"])
+        self.assertEqual(reply["buttons"][0]["id"], "lesson:hint")
+        self.assertEqual(reply["buttons"][0]["title"], "Me de uma dica")
+
+    def test_hint_button_gives_short_guided_hint(self):
+        student = self.create_student(
+            stage=7,
+            assessment_completed="Yes",
+            schedule_completed="Yes",
+            lesson_stage="context_question",
+        )
+
+        with patch.object(main, "generate_ai_answer", return_value="Dica curta.") as answer:
+            reply = self.send(student, "__button__:lesson:hint::Me de uma dica")
+
+        self.assertEqual(reply, "Dica curta.")
+        self.assertIn("hint button", answer.call_args.kwargs["ai_question"])
+        self.assertIn("under 70 words", answer.call_args.kwargs["ai_question"])
 
     def test_basic_levels_always_use_portuguese_guidance(self):
         for level in ("Basic", "Basic 2"):

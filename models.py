@@ -155,6 +155,11 @@ class StudentDB(Base):
         back_populates="student"
     )
 
+    personal_notes = relationship(
+        "PersonalNoteDB",
+        back_populates="student"
+    )
+
     lesson_sessions = relationship(
         "LessonSessionDB",
         back_populates="student"
@@ -271,6 +276,45 @@ class LearningRecordDB(Base):
     student = relationship(
         "StudentDB",
         back_populates="learning_records"
+    )
+
+
+class PersonalNoteDB(Base):
+    __tablename__ = "personal_notes"
+
+    id = Column(
+        Integer,
+        primary_key=True,
+        index=True
+    )
+
+    student_id = Column(
+        Integer,
+        ForeignKey("students.id"),
+        index=True,
+        nullable=False
+    )
+
+    category = Column(
+        String,
+        default="life"
+    )
+
+    note = Column(
+        Text,
+        nullable=False
+    )
+
+    source_message = Column(Text)
+
+    created_at = Column(
+        DateTime,
+        default=datetime.utcnow
+    )
+
+    student = relationship(
+        "StudentDB",
+        back_populates="personal_notes"
     )
 
 

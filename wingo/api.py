@@ -1,5 +1,6 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 import re
 
@@ -131,7 +132,7 @@ def register(student: Student, request: Request, db: Session = Depends(get_db)):
     if existing_student:
         raise HTTPException(
             status_code=400,
-            detail="Este email já está cadastrado."
+            detail="Este email jÃ¡ estÃ¡ cadastrado."
         )
 
     existing_phone = db.query(StudentDB).filter(
@@ -141,7 +142,7 @@ def register(student: Student, request: Request, db: Session = Depends(get_db)):
     if existing_phone:
         raise HTTPException(
             status_code=400,
-            detail="Este telefone já está cadastrado."
+            detail="Este telefone jÃ¡ estÃ¡ cadastrado."
         )
 
     hashed_password = bcrypt.hashpw(
@@ -219,7 +220,7 @@ def get_student(
     if not student:
         raise HTTPException(
             status_code=404,
-            detail="Aluno não encontrado"
+            detail="Aluno nÃ£o encontrado"
         )
 
     return {
@@ -257,7 +258,7 @@ def login(data: Login, request: Request, db: Session = Depends(get_db)):
     if not student:
         raise HTTPException(
             status_code=404,
-            detail="Aluno não encontrado"
+            detail="Aluno nÃ£o encontrado"
         )
 
     if not bcrypt.checkpw(
@@ -285,7 +286,7 @@ def login(data: Login, request: Request, db: Session = Depends(get_db)):
 @_routes.get("/me")
 def me(user=Depends(get_current_user)):
     return {
-        "message": "Usuário autenticado",
+        "message": "UsuÃ¡rio autenticado",
         "user": user
     }
 
@@ -359,7 +360,7 @@ def get_student_progress(
     if not student:
         raise HTTPException(
             status_code=404,
-            detail="Aluno não encontrado"
+            detail="Aluno nÃ£o encontrado"
         )
 
     return {
@@ -450,7 +451,7 @@ def get_student_conversations(
     if not student:
         raise HTTPException(
             status_code=404,
-            detail="Aluno não encontrado"
+            detail="Aluno nÃ£o encontrado"
         )
 
     return {
@@ -564,7 +565,7 @@ def chat(
     if not student:
         raise HTTPException(
             status_code=404,
-            detail="Aluno não encontrado"
+            detail="Aluno nÃ£o encontrado"
         )
 
     answer = generate_ai_answer(
@@ -907,6 +908,78 @@ def build_review_message(student: StudentDB, db: Session):
     return "\n".join(lines)
 
 
+def get_latest_personal_note(student: StudentDB):
+    notes = list(getattr(student, "personal_notes", []) or [])
+    if not notes:
+        return None
+    return sorted(notes, key=lambda note: note.id or 0, reverse=True)[0]
+
+
+def build_smart_return_prompt(student: StudentDB, db: Session):
+    lesson = get_current_lesson(student)
+    recent_records = get_recent_learning_records(student.id, db, limit=1)
+    latest_note = get_latest_personal_note(student)
+
+    if student.current_stage == 7 and not is_lesson_completed(student):
+        return {
+            "type": "buttons",
+            "body": (
+                "Que bom que voce voltou. Podemos continuar a aula atual "
+                f"({format_lesson_title(lesson)}), revisar um ponto recente "
+                "ou fazer uma pratica rapidinha de 2 minutos."
+            ),
+            "buttons": [
+                {"id": "return:continue", "title": "Continuar aula"},
+                {"id": "return:review", "title": "Revisar"},
+                {"id": "return:practice", "title": "Mini pratica"},
+            ],
+        }
+
+    if recent_records:
+        record = recent_records[0]
+        point = record.corrected_text or record.explanation or record.topic or "um ponto recente"
+        return {
+            "type": "buttons",
+            "body": (
+                "Que bom que voce voltou. Antes de seguir, vale revisar este ponto: "
+                f"{point[:140]}\n\nO que prefere fazer agora?"
+            ),
+            "buttons": [
+                {"id": "return:review", "title": "Revisar erro"},
+                {"id": "return:practice", "title": "Mini pratica"},
+                {"id": "return:continue", "title": "Continuar aula"},
+            ],
+        }
+
+    if latest_note:
+        return {
+            "type": "buttons",
+            "body": (
+                "Que bom que voce voltou. Lembrei de uma coisa que voce comentou: "
+                f"{latest_note.note[:140]}\n\nQuer me contar como foi ou prefere ir direto "
+                "para a aula?"
+            ),
+            "buttons": [
+                {"id": "return:personal", "title": "Contar agora"},
+                {"id": "return:continue", "title": "Continuar aula"},
+                {"id": "return:practice", "title": "Mini pratica"},
+            ],
+        }
+
+    return {
+        "type": "buttons",
+        "body": (
+            "Que bom que voce voltou. Tenho uma pratica de 2 minutos pronta para aquecer, "
+            "mas tambem posso continuar a aula ou mudar de tema."
+        ),
+        "buttons": [
+            {"id": "return:practice", "title": "Mini pratica"},
+            {"id": "return:continue", "title": "Continuar aula"},
+            {"id": "return:topic", "title": "Mudar tema"},
+        ],
+    }
+
+
 def reset_student_for_beta(student: StudentDB, db: Session):
     db.query(ConversationDB).filter(ConversationDB.student_id == student.id).delete()
     db.query(LearningRecordDB).filter(LearningRecordDB.student_id == student.id).delete()
@@ -1011,12 +1084,113 @@ def handle_control_command(student: StudentDB, message: str, db: Session):
     return None
 
 
+def parse_choice_button_message(message: str):
+    match = re.fullmatch(
+        r"__button__:(return|post_lesson|lesson):(continue|review|practice|personal|topic|next_preview|hint)::(.+)",
+        message or "",
+        flags=re.DOTALL,
+    )
+    if not match:
+        return None
+    return {
+        "context": match.group(1),
+        "choice": match.group(2),
+        "title": match.group(3).strip(),
+    }
+
+
+def handle_choice_button(student: StudentDB, button_choice: dict, db: Session):
+    choice = button_choice["choice"]
+
+    if choice == "hint":
+        lesson = get_current_lesson(student)
+        return generate_ai_answer(
+            student=student,
+            question=button_choice["title"],
+            db=db,
+            ai_question=(
+                "[Internal instruction: the student tapped a hint button because they are stuck. "
+                f"The current lesson is {lesson['title']} and the current stage is {get_lesson_stage(student)}. "
+                "Give one short hint in Portuguese, one tiny English example, and ask the same exercise "
+                "again in simpler words. Do not give the full answer unless the current exercise is only "
+                "a greeting. Keep it under 70 words.]"
+            ),
+        )
+
+    if choice == "review":
+        return build_review_message(student, db)
+
+    if choice == "topic":
+        return (
+            "Combinado. Qual tema voce quer praticar agora?\n\n"
+            "Pode ser: viagem, trabalho, futuro, entrevista ou pronuncia."
+        )
+
+    if choice == "next_preview":
+        return build_next_lesson_preview(student, db)
+
+    if choice == "practice":
+        return generate_ai_answer(
+            student=student,
+            question=button_choice["title"],
+            db=db,
+            ai_question=(
+                "[Internal instruction: the student tapped a post-lesson button to practice "
+                "conversation. Start a tiny conversation practice connected to the student's "
+                "level, interests, and recent lesson. Ask exactly one short question. For Basic "
+                "students, explain in Portuguese and keep the English sentence simple.]"
+            ),
+        )
+
+    if choice == "personal":
+        return generate_ai_answer(
+            student=student,
+            question=button_choice["title"],
+            db=db,
+            ai_question=(
+                "[Internal instruction: the student tapped a return button to talk about "
+                "a saved personal memory. Use the personal relationship memory naturally. "
+                "Ask one warm follow-up question, then gently connect back to English "
+                "practice. For Basic students, speak mainly in Portuguese.]"
+            ),
+        )
+
+    if choice == "continue":
+        if student.current_stage == 7 and is_lesson_completed(student):
+            return start_guided_lesson(student, db, mode="manual")
+
+        if student.current_stage == 7:
+            resumed_answer = resume_stuck_guided_lesson(
+                student,
+                "continuar aula guiada",
+                db,
+            )
+            if resumed_answer is not None:
+                return resumed_answer
+
+            return generate_ai_answer(
+                student=student,
+                question=button_choice["title"],
+                db=db,
+                ai_question=(
+                    "[Internal instruction: the student tapped a return button to continue "
+                    "the current guided lesson. Continue from the saved lesson stage. Do not "
+                    "restart onboarding and do not open a free chat. Ask exactly one next "
+                    "practice question.]"
+                ),
+            )
+
+        return recover_student_flow(student, db)
+
+    return None
+
+
 def recover_student_flow(student: StudentDB, db: Session):
     if not (student.name or "").strip():
         student.current_stage = 2
         db.commit()
         return (
-            "Tive um problema aqui. Vou retomar com você do ponto certo.\n\n"
+            "Tive um problema aqui. Vou retomar com vocÃª do ponto certo.\n\n"
             "Primeiro, qual e o seu nome?"
         )
 
@@ -1024,7 +1198,7 @@ def recover_student_flow(student: StudentDB, db: Session):
         student.current_stage = 3
         db.commit()
         return (
-            "Tive um problema aqui. Vou retomar com você do ponto certo.\n\n"
+            "Tive um problema aqui. Vou retomar com vocÃª do ponto certo.\n\n"
             "Me conta com suas palavras: por que voce quer aprender ingles?"
         )
 
@@ -1032,7 +1206,7 @@ def recover_student_flow(student: StudentDB, db: Session):
         student.current_stage = 35
         db.commit()
         return (
-            "Tive um problema aqui. Vou retomar com você do ponto certo.\n\n"
+            "Tive um problema aqui. Vou retomar com vocÃª do ponto certo.\n\n"
             "Me conta do que voce gosta para eu personalizar suas aulas."
         )
 
@@ -1040,7 +1214,7 @@ def recover_student_flow(student: StudentDB, db: Session):
         student.current_stage = 4
         db.commit()
         return (
-            "Tive um problema aqui. Vou retomar com você do ponto certo.\n\n"
+            "Tive um problema aqui. Vou retomar com vocÃª do ponto certo.\n\n"
             "Voce ja estudou ingles antes, mesmo que por pouco tempo?"
         )
 
@@ -1048,14 +1222,14 @@ def recover_student_flow(student: StudentDB, db: Session):
         student.current_stage = 70
         db.commit()
         return (
-            "Tive um problema aqui. Vou retomar com você do ponto certo.\n\n"
+            "Tive um problema aqui. Vou retomar com vocÃª do ponto certo.\n\n"
             "Qual horario voce prefere para receber sua aula diaria?"
         )
 
     student.current_stage = 7
     db.commit()
     return (
-        "Tive um problema aqui. Vou retomar com você do ponto certo.\n\n"
+        "Tive um problema aqui. Vou retomar com vocÃª do ponto certo.\n\n"
         "Quando quiser continuar, me mande: vamos comecar."
     )
 
@@ -1117,11 +1291,142 @@ def build_audio_replay(student: StudentDB, db: Session):
         phrases = extract_english_phrases_for_audio(conversation.answer or "")
         if phrases:
             return (
-                "Claro, vou repetir o áudio da última frase praticada.\n\n"
+                "Claro, vou repetir o Ã¡udio da Ãºltima frase praticada.\n\n"
                 "Repeat after me:\n" + "\n".join(phrases[:3])
             )
 
-    return "Claro. Qual frase em inglês você quer que eu repita em áudio?"
+    return "Claro. Qual frase em inglÃªs vocÃª quer que eu repita em Ã¡udio?"
+
+
+def is_short_time_request(message: str):
+    text = normalize_intent_text(message)
+    return any(
+        phrase in text
+        for phrase in {
+            "so 2 min",
+            "so dois min",
+            "tenho 2 min",
+            "tenho dois min",
+            "rapidinho",
+            "rapido",
+            "hoje nao posso muito",
+            "nao posso muito hoje",
+            "pouco tempo",
+            "estou sem tempo",
+            "to sem tempo",
+            "correndo",
+            "bem rapido",
+        }
+    )
+
+
+def is_stuck_lesson_answer(message: str):
+    text = normalize_intent_text(message)
+    if not text:
+        return True
+
+    stuck_markers = {
+        "nao sei",
+        "n sei",
+        "sei la",
+        "nao entendi",
+        "n entendi",
+        "entendi nada",
+        "to confuso",
+        "estou confuso",
+        "confuso",
+        "como assim",
+        "me ajuda",
+        "ajuda",
+        "help",
+        "dica",
+        "hint",
+        "???",
+        "?",
+    }
+    return text in stuck_markers or any(marker in text for marker in stuck_markers)
+
+
+def build_stuck_lesson_recovery(student: StudentDB, db: Session):
+    lesson = get_current_lesson(student)
+    stage = get_lesson_stage(student)
+
+    if lesson["title"] == "Greetings":
+        example = "Exemplo: Hello."
+        reformulated = "Vamos bem simples: como voce diria 'Ola' em ingles?"
+    elif lesson["title"] == "Past Simple":
+        example = "Exemplo: Yesterday I studied."
+        reformulated = "Agora tente uma frase curta sobre ontem com 'Yesterday I...'"
+    elif stage == "production":
+        example = "Exemplo: I am studying English."
+        reformulated = "Tente montar uma frase curta em ingles com a ideia da aula."
+    else:
+        example = f"Exemplo ligado a {lesson['title']}: I practice every day."
+        reformulated = "Vamos simplificar: responda com uma frase curta em ingles."
+
+    return {
+        "type": "buttons",
+        "body": (
+            "Sem problema. Vou reformular.\n\n"
+            f"{reformulated}\n\n"
+            f"{example}\n\n"
+            "Pode tentar do seu jeito. Se quiser, toque no botao de dica."
+        ),
+        "buttons": [
+            {"id": "lesson:hint", "title": "Me de uma dica"},
+        ],
+    }
+
+
+def get_recent_example_context(student: StudentDB, db: Session, limit: int = 8):
+    recent = (
+        db.query(ConversationDB)
+        .filter(ConversationDB.student_id == student.id)
+        .order_by(ConversationDB.id.desc())
+        .limit(limit)
+        .all()
+    )
+    snippets = []
+    for conversation in recent:
+        text = f"{conversation.question or ''} {conversation.answer or ''}"
+        text = re.sub(r"\s+", " ", text).strip()
+        if text:
+            snippets.append(text[:180])
+
+    if not snippets:
+        return "No recent examples saved yet."
+
+    return "\n".join(f"- {snippet}" for snippet in snippets[:5])
+
+
+def build_short_time_micro_lesson(student: StudentDB, message: str, db: Session):
+    student.current_stage = 7
+    db.commit()
+    return generate_ai_answer(
+        student=student,
+        question=message,
+        db=db,
+        ai_question=(
+            "[Internal instruction: the student said they have very little time. "
+            "Switch to a 2-minute micro-lesson. Do not send a full lesson, do not ask "
+            "multiple questions, and do not start a long explanation. Send at most 70 words. "
+            "Use exactly: one warm acknowledgement, one tiny useful English example, and "
+            "one short exercise for the student to answer. For Basic students, explain mainly "
+            "in Portuguese. Avoid repeating any recent examples listed below.]\n\n"
+            f"Recent examples to avoid:\n{get_recent_example_context(student, db)}\n\n"
+            f"Student message: {message}"
+        ),
+    )
+
+
+def build_varied_past_simple_quiz(student: StudentDB, prefix: str, language: str, db: Session):
+    recent = get_recent_example_context(student, db).lower()
+    if any(token in recent for token in ("yesterday, i ___ on a project", "work -> worked", "worked")):
+        return build_past_simple_finish_quiz(prefix, language)
+    completed_blocks = ((student.xp or 0) // 6) % 2
+    if completed_blocks == 1:
+        return build_past_simple_finish_quiz(prefix, language)
+    return build_past_simple_work_quiz(prefix, language)
 
 
 def process_whatsapp_message(phone: str, message: str, db: Session):
@@ -1132,6 +1437,12 @@ def process_whatsapp_message(phone: str, message: str, db: Session):
     ):
         student.preferred_language = "Portuguese"
         db.commit()
+
+    choice_button = parse_choice_button_message(message)
+    if choice_button:
+        choice_reply = handle_choice_button(student, choice_button, db)
+        if choice_reply:
+            return choice_reply
 
     practice_choice = parse_practice_button_message(message)
 
@@ -1154,10 +1465,7 @@ def process_whatsapp_message(phone: str, message: str, db: Session):
         student.current_stage = 7
         db.commit()
         prefix = "New quiz block - Question 1 of 3" if practice_choice["language"] == "en" else "Novo bloco de quizzes - Pergunta 1 de 3"
-        completed_blocks = ((student.xp or 0) // 6) % 2
-        if completed_blocks == 0:
-            return build_past_simple_work_quiz(prefix, practice_choice["language"])
-        return build_past_simple_finish_quiz(prefix, practice_choice["language"])
+        return build_varied_past_simple_quiz(student, prefix, practice_choice["language"], db)
 
     quiz_answer = parse_quiz_button_message(message)
 
@@ -1178,6 +1486,13 @@ def process_whatsapp_message(phone: str, message: str, db: Session):
     if student.current_stage != 0:
         student.last_activity = datetime.utcnow()
         db.commit()
+
+        if (
+            is_short_time_request(message)
+            and getattr(student, "assessment_completed", "No") == "Yes"
+            and getattr(student, "schedule_completed", "No") == "Yes"
+        ):
+            return build_short_time_micro_lesson(student, message, db)
 
         command_reply = handle_control_command(student, message, db)
         if command_reply:
@@ -1217,6 +1532,13 @@ def process_whatsapp_message(phone: str, message: str, db: Session):
         ):
             return build_next_lesson_preview(student, db)
 
+        if (
+            student.current_stage == 7
+            and not is_lesson_completed(student)
+            and is_stuck_lesson_answer(message)
+        ):
+            return build_stuck_lesson_recovery(student, db)
+
     if student.current_stage == 999:
         student.last_activity = datetime.utcnow()
         db.commit()
@@ -1229,6 +1551,10 @@ def process_whatsapp_message(phone: str, message: str, db: Session):
 
         return [
             build_intro_video_reply(),
+            (
+                "Bem-vindo(a)! Esse e nosso primeiro contato, entao vou te guiar "
+                "passo a passo."
+            ),
             "Primeiro, qual e o seu nome?"
         ]
 
@@ -1631,6 +1957,7 @@ def process_whatsapp_message(phone: str, message: str, db: Session):
                     "Acknowledge the topic, give one fresh level-appropriate example that does not "
                     "repeat recent conversation examples, then ask exactly one short exercise about it. "
                     "Use Portuguese guidance for Basic and Basic 2 students.]\n\n"
+                    f"Recent examples to avoid:\n{get_recent_example_context(student, db)}\n\n"
                     f"Student message: {message}"
                 ),
             )
@@ -1646,7 +1973,7 @@ def process_whatsapp_message(phone: str, message: str, db: Session):
                 if quiz_language == "en"
                 else "Vamos praticar o Past Simple. Escolha a resposta correta. Pergunta 1 de 3"
             )
-            return build_past_simple_work_quiz(intro, quiz_language)
+            return build_varied_past_simple_quiz(student, intro, quiz_language, db)
 
         if is_schedule_change_request(message):
             student.current_stage = 70
@@ -1877,7 +2204,7 @@ def assessment(
     if not student:
         raise HTTPException(
             status_code=404,
-            detail="Aluno não encontrado"
+            detail="Aluno nÃ£o encontrado"
         )
 
     client = get_openai_client()
@@ -2100,7 +2427,7 @@ def dashboard_operations(
 
 
 _DEPENDENCY_NAMES = ('AssessmentRequest', 'CORRECTION_RUBRIC', 'CURRICULUM', 'CURRICULUM_BY_NUMBER', 'ChatRequest', 'Conversation', 'ConversationDB', 'DAILY_WORD_TIME', 'DASHBOARD_DIR', 'FileResponse', 'HTTPException', 'LESSON_COMPLETED_STAGE', 'LESSON_STAGES', 'LearningRecord', 'LearningRecordDB', 'LessonSessionDB', 'Login', 'OperationalMetricDB', 'OutboundDeliveryDB', 'PLACEMENT_RUBRIC', 'PRODUCT_PLANS', 'PRONUNCIATION_RUBRIC', 'ProcessedWebhookMessageDB', 'Progress', 'ProgressDB', 'PronunciationAttemptDB', 'QuizAnswer', 'SALES_DIR', 'SPACED_REVIEW_INTERVALS', 'Session', 'StateTransitionDB', 'Student', 'StudentDB', 'WEEKLY_QUIZ_DAY', 'WEEKLY_QUIZ_TIME', 'WEEKLY_REPORT_DAY', 'WEEKLY_REPORT_TIME', 'add_onboarding_note', 'bcrypt', 'build_deterministic_guided_reply', 'build_intro_video_reply', 'build_lesson_opening_replies', 'build_next_lesson_preview', 'build_past_simple_finish_quiz', 'build_past_simple_work_quiz', 'build_post_lesson_feedback_message', 'build_quiz_correct_reply', 'build_quiz_retry', 'build_weekly_progress_report', 'calculate_learning_xp', 'call_with_retry', 'create_access_token', 'datetime', 'detect_control_command', 'detect_language_switch_request', 'detect_requested_level_change', 'estimate_level_from_study_history', 'evaluate_placement_test_details', 'evaluate_placement_test_details_fallback', 'extract_english_phrases_for_audio', 'extract_name_candidate', 'format_lesson_schedule', 'format_lesson_title', 'format_placement_feedback', 'func', 'generate_ai_answer', 'generate_writing_practice_feedback', 'get_advancement_criterion', 'get_current_lesson', 'get_latest_lesson_session', 'get_lesson_design', 'get_lesson_stage', 'get_openai_client', 'get_placement_questions', 'get_quiz_interface_language', 'get_start_lesson_for_level', 'get_student_lesson_schedule', 'has_recent_past_simple_context', 'is_affirmative', 'is_basic_level', 'is_exercise_request', 'is_lesson_completed', 'is_lesson_schedule_question', 'is_lesson_start_request', 'is_level_retest_request', 'is_mixed_language_message', 'is_negative', 'is_next_lesson_question', 'is_number_without_time_unit', 'is_off_topic_during_assessment', 'is_probable_learning_goal', 'is_probable_person_name', 'is_ready_for_lesson', 'is_schedule_change_request', 'is_unclear_study_experience', 'is_unclear_yes_no', 'is_valid_placement_answer', 'json', 'looks_like_name_correction', 'normalize_intent_text', 'normalize_language_preference', 'normalize_whatsapp_phone_for_send', 'os', 'parse_lesson_schedule', 'parse_practice_button_message', 'parse_quiz_button_message', 'repeat_placement_question', 'require_student_access', 'reset_lesson_flow', 'resume_stuck_guided_lesson', 'save_lesson_feedback_if_expected', 'start_guided_lesson', 'text', 'timedelta', 'update_lesson_engagement', 'wants_portuguese_mode', 'whatsapp_phone_variants')
-_EXPORTED_NAMES = ('assessment', 'build_dashboard_student', 'build_progress_message', 'build_review_message', 'build_status_message', 'chat', 'create_learning_record', 'dashboard_operations', 'dashboard_page', 'dashboard_student', 'dashboard_teacher', 'get_completed_lessons_count', 'get_conversations', 'get_learning_mode_label', 'get_or_create_whatsapp_student', 'get_pedagogy_lesson', 'get_pedagogy_lessons', 'get_pedagogy_overview', 'get_product_plans', 'get_progress', 'get_recent_learning_records', 'get_student', 'get_student_conversations', 'get_student_learning_records', 'get_student_lesson_schedule_endpoint', 'get_student_progress', 'get_students', 'get_students_dashboard', 'handle_control_command', 'login', 'me', 'operational_health', 'operational_metrics', 'process_whatsapp_message', 'quiz', 'ranking', 'recent_state_transitions', 'recover_student_flow', 'register', 'reset_student_for_beta', 'sales_page', 'save_conversation', 'save_progress', 'update_student_lesson_schedule')
+_EXPORTED_NAMES = ('assessment', 'build_dashboard_student', 'build_progress_message', 'build_review_message', 'build_smart_return_prompt', 'build_status_message', 'chat', 'create_learning_record', 'dashboard_operations', 'dashboard_page', 'dashboard_student', 'dashboard_teacher', 'get_completed_lessons_count', 'get_conversations', 'get_learning_mode_label', 'get_or_create_whatsapp_student', 'get_pedagogy_lesson', 'get_pedagogy_lessons', 'get_pedagogy_overview', 'get_product_plans', 'get_progress', 'get_recent_learning_records', 'get_student', 'get_student_conversations', 'get_student_learning_records', 'get_student_lesson_schedule_endpoint', 'get_student_progress', 'get_students', 'get_students_dashboard', 'handle_control_command', 'login', 'me', 'operational_health', 'operational_metrics', 'process_whatsapp_message', 'quiz', 'ranking', 'recent_state_transitions', 'recover_student_flow', 'register', 'reset_student_for_beta', 'sales_page', 'save_conversation', 'save_progress', 'update_student_lesson_schedule')
 _DYNAMIC_CALLABLES = {
     "call_with_retry",
     "evaluate_placement_test_details",
@@ -2110,14 +2437,24 @@ _DYNAMIC_CALLABLES = {
 }
 
 
-def configure_api(resolve):
+def configure_api(dependencies: Mapping[str, object]):
+    dependency_names = set(_DEPENDENCY_NAMES)
+    provided_names = set(dependencies)
+    missing_names = sorted(dependency_names - provided_names)
+    if missing_names:
+        raise RuntimeError(
+            "Missing API dependencies: " + ", ".join(missing_names)
+        )
+
     for name in _DEPENDENCY_NAMES:
         if name in _DYNAMIC_CALLABLES:
+            provider = dependencies[name]
             globals()[name] = (
-                lambda *args, _name=name, **kwargs: resolve(_name)(*args, **kwargs)
+                lambda *args, _provider=provider, **kwargs:
+                _provider()(*args, **kwargs)
             )
         else:
-            globals()[name] = resolve(name)
+            globals()[name] = dependencies[name]
 
     if not router.routes:
         for route in _routes.items:

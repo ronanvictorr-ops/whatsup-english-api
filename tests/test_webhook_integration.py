@@ -1,4 +1,4 @@
-import asyncio
+﻿import asyncio
 import hashlib
 import hmac
 import json
@@ -10,7 +10,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 import main
-from wingo import security
+from wingo import security, webhook
 from database import Base
 from models import (
     OutboundDeliveryDB,
@@ -125,11 +125,15 @@ class WebhookIntegrationTests(unittest.TestCase):
             main,
             "process_whatsapp_message",
             return_value=["first reply", "second reply"],
-        ), patch.object(main, "send_whatsapp_reply", side_effect=self.sender):
+        ), patch.object(main, "send_whatsapp_reply", side_effect=self.sender), patch.object(
+            main, "send_whatsapp_typing_indicator"
+        ) as typing, patch.object(webhook, "sleep") as wait:
             self.receive(text_payload(message_id="wamid.multi"))
 
         deliveries = self.db.query(OutboundDeliveryDB).order_by(OutboundDeliveryDB.id).all()
         self.assertEqual(len(self.sent), 2)
+        typing.assert_called_once_with("wamid.multi")
+        wait.assert_called_once()
         self.assertEqual(
             [item.idempotency_key for item in deliveries],
             ["wamid.multi:0", "wamid.multi:1"],
@@ -143,12 +147,41 @@ class WebhookIntegrationTests(unittest.TestCase):
 
         with patch.object(main, "process_whatsapp_message", side_effect=self.process), patch.object(
             main, "send_whatsapp_reply", side_effect=self.sender
-        ):
+        ), patch.object(main, "send_whatsapp_typing_indicator"), patch.object(webhook, "sleep"):
             self.receive(text_payload(message_id="wamid.returning", text="vamos continuar"))
 
         self.assertEqual(len(self.sent), 2)
-        self.assertIn("Que bom que você está de volta", self.sent[0][1])
+        self.assertEqual(self.sent[0][1]["type"], "buttons")
+        self.assertIn("Que bom que", self.sent[0][1]["body"])
+        self.assertEqual(
+            [button["id"] for button in self.sent[0][1]["buttons"]],
+            ["return:practice", "return:continue", "return:topic"],
+        )
         self.assertEqual(self.sent[1][1], "first reply")
+
+    def test_plain_greeting_after_break_does_not_send_duplicate_return_prompt(self):
+        student = self.db.query(StudentDB).one()
+        student.last_activity = datetime.utcnow() - timedelta(minutes=31)
+        self.db.commit()
+
+        with patch.object(main, "process_whatsapp_message", side_effect=self.process), patch.object(
+            main, "send_whatsapp_reply", side_effect=self.sender
+        ):
+            self.receive(text_payload(message_id="wamid.greeting-return", text="Bom dia"))
+
+        self.assertEqual(len(self.sent), 1)
+        self.assertEqual(self.sent[0][1], "first reply")
+
+    def test_reply_delay_is_longer_after_video(self):
+        text_delay = webhook.reply_delay_seconds("Mensagem curta.")
+        video_delay = webhook.reply_delay_seconds(
+            {
+                "type": "video",
+                "caption": "Assista este video rapido antes de responder.",
+            }
+        )
+
+        self.assertGreater(video_delay, text_delay)
 
     def test_delivery_failure_restores_state_and_retry_completes(self):
         send_attempts = 0

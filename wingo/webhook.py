@@ -2,7 +2,7 @@ import json
 import os
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from time import perf_counter
+from time import perf_counter, sleep
 from typing import Any, Callable
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
@@ -33,6 +33,48 @@ _dependencies: WebhookDependencies | None = None
 router = APIRouter()
 
 RETURN_GREETING_AFTER = timedelta(minutes=30)
+DEFAULT_REPLY_DELAY_SECONDS = 1.2
+MAX_REPLY_DELAY_SECONDS = 8.0
+
+
+def build_return_choice_buttons(student: StudentDB | None = None, db: Session | None = None) -> dict:
+    if student is not None and db is not None:
+        try:
+            return _resolve("build_smart_return_prompt")(student, db)
+        except Exception as error:
+            log_event(
+                "smart_return_prompt_failed",
+                student_id=getattr(student, "id", None),
+                error=str(error),
+            )
+
+    return {
+        "type": "buttons",
+        "body": (
+            "Que bom que você está de volta! Quer continuar de onde paramos "
+            "ou prefere escolher outro caminho agora?"
+        ),
+        "buttons": [
+            {"id": "return:continue", "title": "Continuar aula"},
+            {"id": "return:review", "title": "Revisar"},
+            {"id": "return:topic", "title": "Mudar tema"},
+        ],
+    }
+
+
+def is_plain_greeting(message: str) -> bool:
+    normalized = (message or "").strip().lower()
+    normalized = normalized.strip("!.? ")
+    return normalized in {
+        "bom dia",
+        "boa tarde",
+        "boa noite",
+        "oi",
+        "ola",
+        "olá",
+        "hello",
+        "hi",
+    }
 
 
 def is_returning_after_break(student: StudentDB, now: datetime | None = None) -> bool:
@@ -44,6 +86,43 @@ def is_returning_after_break(student: StudentDB, now: datetime | None = None) ->
     if last_activity.tzinfo is None:
         last_activity = last_activity.replace(tzinfo=timezone.utc)
     return current - last_activity >= RETURN_GREETING_AFTER
+
+
+def reply_delay_seconds(previous_reply: Any) -> float:
+    if os.getenv("WINGO_REPLY_DELAY_ENABLED", "true").lower() in {
+        "0",
+        "false",
+        "no",
+    }:
+        return 0.0
+
+    base_delay = float(
+        os.getenv("WINGO_REPLY_DELAY_BASE_SECONDS", DEFAULT_REPLY_DELAY_SECONDS)
+    )
+    max_delay = float(
+        os.getenv("WINGO_REPLY_DELAY_MAX_SECONDS", MAX_REPLY_DELAY_SECONDS)
+    )
+
+    if isinstance(previous_reply, dict) and previous_reply.get("type") == "video":
+        text = previous_reply.get("caption") or ""
+        return min(max_delay, max(base_delay + 3.0, 4.0 + len(text) / 160))
+
+    text = str(previous_reply or "")
+    return min(max_delay, max(base_delay, len(text) / 90))
+
+
+def send_typing_indicator_if_available(message_id: str | None) -> None:
+    if not message_id:
+        return
+
+    try:
+        _resolve("send_whatsapp_typing_indicator")(message_id)
+    except Exception as error:
+        log_event(
+            "typing_indicator_skipped",
+            message_id=message_id,
+            error=str(error),
+        )
 
 
 def configure_webhook(dependencies: WebhookDependencies) -> None:
@@ -217,12 +296,9 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
             db=db,
         )
         replies = reply if isinstance(reply, list) else [reply]
-        if returning_after_break:
+        if returning_after_break and not is_plain_greeting(message):
             replies = [
-                (
-                    "Que bom que você está de volta! Vamos continuar de onde paramos "
-                    "ou você quer falar de outro assunto?"
-                ),
+                build_return_choice_buttons(student, db),
                 *replies,
             ]
         if pronunciation_feedback:
@@ -230,6 +306,12 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
 
         delivery_started = True
         for reply_index, reply_message in enumerate(replies):
+            if reply_index > 0:
+                send_typing_indicator_if_available(message_id)
+                delay = reply_delay_seconds(replies[reply_index - 1])
+                if delay > 0:
+                    sleep(delay)
+
             send_reply_once(
                 db=db,
                 idempotency_key=f"{message_id or phone}:{reply_index}",

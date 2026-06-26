@@ -66,6 +66,10 @@ from wingo.idempotency import (
     send_reply_once,
 )
 from wingo.retries import call_with_retry, http_get_with_retry, http_post_with_retry
+from wingo.personal_memory import (
+    get_recent_personal_notes_summary,
+    save_personal_notes_if_needed,
+)
 from wingo.pronunciation import (
     assess_pronunciation,
     build_pronunciation_feedback,
@@ -119,7 +123,7 @@ def run_academic_automations_once(db: Session, now: datetime) -> None:
 
 
 # =========================
-# CONFIGURAÃ‡Ã•ES INICIAIS
+# CONFIGURAÇÕES INICIAIS
 # =========================
 
 load_dotenv()
@@ -381,10 +385,10 @@ def estimate_level_from_study_history(message: str):
     if "intermedi" in text or "b1" in text or "b2" in text:
         return "Intermediate"
 
-    if "basic 2" in text or "bÃ¡sico 2" in text or "a1+" in text:
+    if "basic 2" in text or "básico 2" in text or "a1+" in text:
         return "Basic 2"
 
-    if "basico" in text or "bÃ¡sico" in text or "iniciante" in text or "a1" in text:
+    if "basico" in text or "básico" in text or "iniciante" in text or "a1" in text:
         return "Basic"
 
     return "Basic"
@@ -398,7 +402,7 @@ def get_placement_questions(level: str):
 
 
 def count_answer_words(message: str):
-    return len(re.findall(r"[A-Za-zÃ€-Ã¿']+", message or ""))
+    return len(re.findall(r"[A-Za-zÀ-ÿ']+", message or ""))
 
 
 def is_valid_placement_answer(level: str, question_index: int, message: str):
@@ -503,12 +507,12 @@ def is_lesson_start_request(message: str):
         for pattern in [
             r"\bvamos comecar\b",
             r"\bcomecar\b",
-            r"\bcomeÃ§ar\b",
+            r"\bcomeçar\b",
             r"\bstart\b",
             r"\blet'?s start\b",
             r"\biniciar\b",
             r"\bproxima aula\b",
-            r"\bprÃ³xima aula\b",
+            r"\bpróxima aula\b",
             r"\bquero aula\b",
             r"\bcontinuar aula\b",
             r"\bstart lesson\b",
@@ -665,11 +669,11 @@ def detect_control_command(message: str):
     text = normalize_intent_text(message)
 
     command_patterns = [
-        ("reset", [r"\breiniciar\b", r"\bresetar\b", r"\bcomecar de novo\b", r"\bcomeÃ§ar de novo\b", r"\bzerar\b"]),
+        ("reset", [r"\breiniciar\b", r"\bresetar\b", r"\bcomecar de novo\b", r"\bcomeçar de novo\b", r"\bzerar\b"]),
         ("status", [r"\bstatus\b", r"\bonde estou\b", r"\bem que etapa\b"]),
-        ("progress", [r"\bmeu progresso\b", r"\bprogresso\b", r"\bminha evolucao\b", r"\bminha evoluÃ§Ã£o\b"]),
+        ("progress", [r"\bmeu progresso\b", r"\bprogresso\b", r"\bminha evolucao\b", r"\bminha evolução\b"]),
         ("weekly_report", [r"\brelatorio semanal\b", r"\brelatorio da semana\b", r"\bresumo da semana\b"]),
-        ("review", [r"\brevisar aula\b", r"\brevisao\b", r"\brevisÃ£o\b", r"\brevisar\b"]),
+        ("review", [r"\brevisar aula\b", r"\brevisao\b", r"\brevisão\b", r"\brevisar\b"]),
         ("pause", [r"\bpausar aulas\b", r"\bpausar\b", r"\bdar um tempo\b"]),
         ("resume", [r"\bretomar aulas\b", r"\bvoltar aulas\b", r"\bcontinuar aulas\b", r"\bvamos continuar\b"]),
         ("support", [r"\bsuporte\b", r"\bfalar com suporte\b", r"\bhumano\b", r"\bprofessor humano\b"]),
@@ -856,7 +860,7 @@ def build_post_lesson_feedback_message(student: StudentDB, db: Session):
     if not session:
         return None
 
-    lesson_focus = session.summary or f"Aula concluida: {session.lesson_title}."
+    lesson_focus = session.summary or f"Voce praticou {session.lesson_title}."
     records = get_recent_learning_records(student.id, db, limit=3)
     review_lines = []
 
@@ -864,21 +868,28 @@ def build_post_lesson_feedback_message(student: StudentDB, db: Session):
         if record.corrected_text:
             review_lines.append(f"- {record.corrected_text[:90]}")
 
-    review_text = "\n".join(review_lines) if review_lines else "- Vamos revisar as frases principais da aula."
+    review_text = "\n".join(review_lines) if review_lines else "- Uma frase curta usando o tema da aula."
     next_hook = build_next_lesson_preview(student, db, closing_hook=True)
 
-    return (
+    body = (
         "Fechamento da aula de hoje:\n\n"
-        f"{lesson_focus}\n\n"
-        "Voce praticou:\n"
-        f"- {session.lesson_title}\n"
-        "- Respostas curtas no WhatsApp\n"
-        "- Correcao com feedback imediato\n\n"
-        "Para revisar depois:\n"
+        f"Hoje voce aprendeu: {lesson_focus}\n\n"
+        "Sua missao: me mandar amanha uma frase comecando com "
+        "'Yesterday I...' ou usando uma frase da aula.\n\n"
+        "Ponto para guardar:\n"
         f"{review_text}\n\n"
+        "Proximo passo:\n"
         f"{next_hook}\n\n"
-        "De 0 a 10, quanto essa aula te ajudou hoje?"
+        "Boa aula. Pequeno passo, mas passo real.\n\n"
+        "De 0 a 10, quanto essa aula te ajudou hoje?\n\n"
+        "Se preferir, toque em uma opcao para seguir agora:"
     )
+
+    return {"type": "buttons", "body": body, "buttons": [
+        {"id": "post_lesson:review", "title": "Revisar"},
+        {"id": "post_lesson:practice", "title": "Praticar conversa"},
+        {"id": "post_lesson:next_preview", "title": "Ver proxima"},
+    ]}
 
 
 def get_next_lesson_for_preview(student: StudentDB):
@@ -1514,22 +1525,6 @@ def get_latest_onboarding_note(student: StudentDB, key: str):
     return ""
 
 
-def is_affirmative(message: str):
-    text = (message or "").strip().lower()
-    return any(
-        word in text
-        for word in ["sim", "quero", "pode", "vamos", "yes", "ok", "claro", "bora"]
-    )
-
-
-def is_negative(message: str):
-    text = (message or "").strip().lower()
-    return any(
-        word in text
-        for word in ["nao", "nÃ£o", "prefiro nao", "agora nao", "no"]
-    )
-
-
 def looks_like_english_message(message: str):
     text = (message or "").strip().lower()
 
@@ -1537,8 +1532,8 @@ def looks_like_english_message(message: str):
         return False
 
     portuguese_markers = [
-        "voce", "vocÃª", "nao", "nÃ£o", "quero", "aula", "ingles", "inglÃªs",
-        "porque", "obrigado", "obrigada", "comecar", "comeÃ§ar"
+        "voce", "você", "nao", "não", "quero", "aula", "ingles", "inglês",
+        "porque", "obrigado", "obrigada", "comecar", "começar"
     ]
 
     if any(marker in text for marker in portuguese_markers):
@@ -1791,7 +1786,7 @@ def is_off_topic_during_assessment(message: str):
         return True
 
     if text in {
-        "sim", "nao", "ok", "okay", "ta", "ta bom", "tÃ¡ bom", "beleza",
+        "sim", "nao", "ok", "okay", "ta", "ta bom", "tá bom", "beleza",
         "entendi", "certo", "volta", "pare", "para", "parar", "stop"
     }:
         return True
@@ -1835,7 +1830,7 @@ def is_number_without_time_unit(message: str):
 def extract_name_candidate(message: str):
     text = (message or "").strip()
     cleaned = re.sub(
-        r"(?i)^(meu nome e|meu nome Ã©|me chamo|sou|corrigindo|correcao|correÃ§Ã£o|na verdade|quis dizer)\s*[:,-]?\s*",
+        r"(?i)^(meu nome e|meu nome é|me chamo|sou|corrigindo|correcao|correção|na verdade|quis dizer)\s*[:,-]?\s*",
         "",
         text
     ).strip()
@@ -2119,7 +2114,7 @@ def get_openai_client():
     if not api_key:
         raise HTTPException(
             status_code=500,
-            detail="OPENAI_API_KEY nÃ£o configurada no arquivo .env"
+            detail="OPENAI_API_KEY não configurada no arquivo .env"
         )
 
     return OpenAI(api_key=api_key)
@@ -2311,6 +2306,34 @@ def send_whatsapp_buttons(phone: str, body: str, buttons: list[dict]):
     return response.json()
 
 
+def send_whatsapp_typing_indicator(message_id: str):
+    phone_number_id, access_token = get_meta_whatsapp_config()
+    url = f"https://graph.facebook.com/v23.0/{phone_number_id}/messages"
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "Content-Type": "application/json",
+    }
+    payload = {
+        "messaging_product": "whatsapp",
+        "status": "read",
+        "message_id": message_id,
+        "typing_indicator": {"type": "text"},
+    }
+
+    response = http_post_with_retry(
+        url,
+        headers=headers,
+        json=payload,
+        timeout=8,
+        operation="meta_typing_indicator",
+        attempts=1,
+    )
+    if response.status_code >= 400:
+        raise RuntimeError(f"Meta typing indicator failed: {response.status_code}")
+
+    return response.json()
+
+
 def send_whatsapp_video(
     phone: str,
     caption: str,
@@ -2404,7 +2427,7 @@ def get_reply_text(reply):
 INTRO_VIDEO_PATH = Path(
     os.getenv(
         "WINGO_INTRO_VIDEO_PATH",
-        r"C:\Users\Computer\Desktop\WINGO\APRESENTAÃ‡ÃƒO WINGO.mp4"
+        r"C:\Users\Computer\Desktop\WINGO\APRESENTAÇÃO WINGO.mp4"
     )
 )
 
@@ -2604,37 +2627,6 @@ def send_whatsapp_audio(phone: str, media_id: str):
 
 
 def should_send_pronunciation_audio(question: str, answer: str):
-    text = f"{question}\n{answer}".lower()
-
-    triggers = (
-        "como se diz",
-        "como fala",
-        "como eu digo",
-        "pronuncia",
-        "pronunciar",
-        "pronunciation",
-        "how do you say",
-        "how can i say",
-        "say in english",
-        "em ingles",
-        "em inglÃªs",
-    )
-
-    example_markers = (
-        "example:",
-        "examples:",
-        "for example",
-        "frase:",
-        "frases:",
-        "sentences:",
-    )
-
-    return any(trigger in text for trigger in triggers) or any(
-        marker in text for marker in example_markers
-    )
-
-
-def should_send_pronunciation_audio(question: str, answer: str):
     text = normalize_intent_text(question)
     answer_text = normalize_intent_text(answer)
 
@@ -2657,10 +2649,10 @@ def should_send_pronunciation_audio(question: str, answer: str):
         "repetir o audio",
         "pode falar",
         "nao entendi",
-        "nÃ£o entendi",
+        "não entendi",
         "dificuldade",
         "dificil entender",
-        "difÃ­cil entender",
+        "difícil entender",
     )
 
     answer_triggers = (
@@ -2800,12 +2792,12 @@ def extract_english_phrases_for_audio(answer: str, limit: int = 3):
     candidates = []
 
     for phrase in quoted_phrases:
-        if re.search(r"[A-Za-z]", phrase) and not re.search(r"[Ã€-Ã¿]", phrase):
+        if re.search(r"[A-Za-z]", phrase) and not re.search(r"[À-ÿ]", phrase):
             candidates.append(phrase.strip())
 
     if not candidates:
         for line in (answer or "").splitlines():
-            cleaned = line.strip(" -â€¢0123456789.()")
+            cleaned = line.strip(" -•0123456789.()")
 
             if not cleaned:
                 continue
@@ -3009,75 +3001,10 @@ def evaluate_expected_pronunciation(
 def normalize_language_preference(value: str):
     text = (value or "").strip().lower()
 
-    if text in {"2", "english", "ingles", "inglÃªs"} or "engl" in text or "ingl" in text:
+    if text in {"2", "english", "ingles", "inglês"} or "engl" in text or "ingl" in text:
         return "English"
 
-    if text in {"3", "both", "bilingual", "bilingue", "bilingÃ¼e"}:
-        return "Both"
-
-    if "dois" in text or "ambos" in text or "both" in text:
-        return "Both"
-
-    if text in {"1", "portuguese", "portugues", "portuguÃªs"}:
-        return "Portuguese"
-
-    if "port" in text:
-        return "Portuguese"
-
-    return "Portuguese"
-
-
-def get_language_instruction(language: str):
-    if language == "English":
-        return (
-            "Reply primarily in English. Do not switch to Portuguese unless the "
-            "student explicitly asks for Portuguese or seems completely stuck."
-        )
-
-    if language == "Both":
-        return (
-            "Use English as the main practice language, and add short Portuguese "
-            "explanations only when they help the student understand corrections."
-        )
-
-    return (
-        "Use Portuguese for explanations and guidance, but include English examples "
-        "and practice sentences."
-    )
-
-
-def get_assessment_prompt(language: str):
-    if language == "English":
-        return (
-            "Great!\n\n"
-            "Now I will do a quick assessment to understand your current English level.\n\n"
-            "Don't worry about mistakes. Answer as best as you can.\n\n"
-            "How would you introduce yourself in English to someone you just met?"
-        )
-
-    if language == "Both":
-        return (
-            "Perfect!\n\n"
-            "Now I will do a quick assessment to understand your current English level.\n"
-            "Nao se preocupe com erros. Responda da melhor forma que conseguir.\n\n"
-            "How would you introduce yourself in English to someone you just met?"
-        )
-
-    return (
-        "Otimo!\n\n"
-        "Agora vou fazer uma avaliacao rapida para entender seu nivel atual de ingles.\n\n"
-        "Nao se preocupe com erros. Responda da melhor forma que conseguir.\n\n"
-        "Como voce se apresentaria em ingles para alguem que acabou de conhecer?"
-    )
-
-
-def normalize_language_preference(value: str):
-    text = (value or "").strip().lower()
-
-    if text in {"2", "english", "ingles", "inglÃªs"} or "engl" in text or "ingl" in text:
-        return "English"
-
-    if text in {"1", "portuguese", "portugues", "portuguÃªs"} or "port" in text:
+    if text in {"1", "portuguese", "portugues", "português"} or "port" in text:
         return "Portuguese"
 
     return "Adaptive"
@@ -3181,11 +3108,11 @@ class LearningRecord(BaseModel):
 
 DAY_ALIASES = {
     0: ("segunda", "segunda-feira", "monday", "seg"),
-    1: ("terca", "terÃ§a", "terca-feira", "terÃ§a-feira", "tuesday", "ter"),
+    1: ("terca", "terça", "terca-feira", "terça-feira", "tuesday", "ter"),
     2: ("quarta", "quarta-feira", "wednesday", "qua"),
     3: ("quinta", "quinta-feira", "thursday", "qui"),
     4: ("sexta", "sexta-feira", "friday", "sex"),
-    5: ("sabado", "sÃ¡bado", "saturday", "sab", "sÃ¡b"),
+    5: ("sabado", "sábado", "saturday", "sab", "sáb"),
     6: ("domingo", "sunday", "dom"),
 }
 
@@ -3416,7 +3343,6 @@ def start_guided_lesson(student: StudentDB, db: Session, mode: str):
 
     if previous_session:
         return build_previous_lesson_review(student, db)
-
     return build_lesson_opening_replies(student, db)
 
 
@@ -3686,6 +3612,7 @@ def generate_ai_answer(
     engagement_minutes = getattr(student, "engagement_minutes", 0) or 0
     lesson_messages = getattr(student, "messages_in_current_lesson", 0) or 0
     learning_summary = get_recent_learning_summary(student.id, db)
+    personal_memory = get_recent_personal_notes_summary(student.id, db)
     lesson_context = get_lesson_context(student)
 
     history = (
@@ -3715,6 +3642,9 @@ Student profile:
 Recent academic memory:
 {learning_summary}
 
+Personal relationship memory:
+{personal_memory}
+
 Structured course path:
 {lesson_context}
 
@@ -3736,7 +3666,7 @@ Lesson guidance:
 - Start from the current lesson topic unless the student asks a direct urgent question.
 - If the student asks something unrelated, answer briefly and gently bring them back to the current lesson.
 - Teach one small point at a time, then ask one practice question.
-- If the student says "vamos comecar", "vamos comeÃ§ar", "start", or "let's start", begin the lesson topic directly. Do not ask "How are you today?" in this case.
+- If the student says "vamos comecar", "vamos começar", "start", or "let's start", begin the lesson topic directly. Do not ask "How are you today?" in this case.
 - Do not jump to future lessons unless the student explicitly asks for a preview.
 - Do not advance the course just because the student sent one answer; reinforce, correct, and practice first.
 - If the student asks "what should I study?" or "start the class", begin the current lesson.
@@ -3822,6 +3752,9 @@ Standard Wingo lesson model:
 
 Personalization:
 - Use the student's interests to create examples, short scenarios, and practice prompts.
+- Use personal relationship memory naturally and sparingly, like a tutor who remembers the student. Do not say you have a database or saved memory.
+- If a saved personal event may have happened recently, you may ask one warm follow-up question, then return to the lesson.
+- Do not repeatedly mention the same personal fact in every message.
 - Every guided lesson should include at least one example or exercise connected to the student's interests, unless the student has not shared interests yet.
 - If the student has no interests saved, ask one quick preference question after the current exercise, not before finishing the required lesson step.
 - If the student likes games, use examples with playing, winning, losing, streaming, characters, missions, and teams.
@@ -3929,10 +3862,137 @@ Brand voice:
         db=db
     )
 
+    save_personal_notes_if_needed(
+        student=student,
+        message=question,
+        db=db,
+        get_openai_client=get_openai_client,
+        call_with_retry=call_with_retry,
+    )
+
     return answer
 
 
-globals().update(configure_api(resolve=lambda name: globals()[name]))
+api_dependencies = {
+        "AssessmentRequest": AssessmentRequest,
+        "CORRECTION_RUBRIC": CORRECTION_RUBRIC,
+        "CURRICULUM": CURRICULUM,
+        "CURRICULUM_BY_NUMBER": CURRICULUM_BY_NUMBER,
+        "ChatRequest": ChatRequest,
+        "Conversation": Conversation,
+        "ConversationDB": ConversationDB,
+        "DAILY_WORD_TIME": DAILY_WORD_TIME,
+        "DASHBOARD_DIR": DASHBOARD_DIR,
+        "FileResponse": FileResponse,
+        "HTTPException": HTTPException,
+        "LESSON_COMPLETED_STAGE": LESSON_COMPLETED_STAGE,
+        "LESSON_STAGES": LESSON_STAGES,
+        "LearningRecord": LearningRecord,
+        "LearningRecordDB": LearningRecordDB,
+        "LessonSessionDB": LessonSessionDB,
+        "Login": Login,
+        "OperationalMetricDB": OperationalMetricDB,
+        "OutboundDeliveryDB": OutboundDeliveryDB,
+        "PLACEMENT_RUBRIC": PLACEMENT_RUBRIC,
+        "PRODUCT_PLANS": PRODUCT_PLANS,
+        "PRONUNCIATION_RUBRIC": PRONUNCIATION_RUBRIC,
+        "ProcessedWebhookMessageDB": ProcessedWebhookMessageDB,
+        "Progress": Progress,
+        "ProgressDB": ProgressDB,
+        "PronunciationAttemptDB": PronunciationAttemptDB,
+        "QuizAnswer": QuizAnswer,
+        "SALES_DIR": SALES_DIR,
+        "SPACED_REVIEW_INTERVALS": SPACED_REVIEW_INTERVALS,
+        "Session": Session,
+        "StateTransitionDB": StateTransitionDB,
+        "Student": Student,
+        "StudentDB": StudentDB,
+        "WEEKLY_QUIZ_DAY": WEEKLY_QUIZ_DAY,
+        "WEEKLY_QUIZ_TIME": WEEKLY_QUIZ_TIME,
+        "WEEKLY_REPORT_DAY": WEEKLY_REPORT_DAY,
+        "WEEKLY_REPORT_TIME": WEEKLY_REPORT_TIME,
+        "add_onboarding_note": add_onboarding_note,
+        "bcrypt": bcrypt,
+        "build_deterministic_guided_reply": build_deterministic_guided_reply,
+        "build_intro_video_reply": build_intro_video_reply,
+        "build_lesson_opening_replies": build_lesson_opening_replies,
+        "build_next_lesson_preview": build_next_lesson_preview,
+        "build_past_simple_finish_quiz": build_past_simple_finish_quiz,
+        "build_past_simple_work_quiz": build_past_simple_work_quiz,
+        "build_post_lesson_feedback_message": build_post_lesson_feedback_message,
+        "build_quiz_correct_reply": build_quiz_correct_reply,
+        "build_quiz_retry": build_quiz_retry,
+        "build_weekly_progress_report": build_weekly_progress_report,
+        "calculate_learning_xp": calculate_learning_xp,
+        "call_with_retry": lambda: call_with_retry,
+        "create_access_token": create_access_token,
+        "datetime": datetime,
+        "detect_control_command": detect_control_command,
+        "detect_language_switch_request": detect_language_switch_request,
+        "detect_requested_level_change": detect_requested_level_change,
+        "estimate_level_from_study_history": estimate_level_from_study_history,
+        "evaluate_placement_test_details": lambda: evaluate_placement_test_details,
+        "evaluate_placement_test_details_fallback": evaluate_placement_test_details_fallback,
+        "extract_english_phrases_for_audio": extract_english_phrases_for_audio,
+        "extract_name_candidate": extract_name_candidate,
+        "format_lesson_schedule": format_lesson_schedule,
+        "format_lesson_title": format_lesson_title,
+        "format_placement_feedback": format_placement_feedback,
+        "func": func,
+        "generate_ai_answer": lambda: generate_ai_answer,
+        "generate_writing_practice_feedback": generate_writing_practice_feedback,
+        "get_advancement_criterion": get_advancement_criterion,
+        "get_current_lesson": get_current_lesson,
+        "get_latest_lesson_session": get_latest_lesson_session,
+        "get_lesson_design": get_lesson_design,
+        "get_lesson_stage": get_lesson_stage,
+        "get_openai_client": lambda: get_openai_client,
+        "get_placement_questions": get_placement_questions,
+        "get_quiz_interface_language": get_quiz_interface_language,
+        "get_start_lesson_for_level": get_start_lesson_for_level,
+        "get_student_lesson_schedule": get_student_lesson_schedule,
+        "has_recent_past_simple_context": has_recent_past_simple_context,
+        "is_affirmative": is_affirmative,
+        "is_basic_level": is_basic_level,
+        "is_exercise_request": is_exercise_request,
+        "is_lesson_completed": is_lesson_completed,
+        "is_lesson_schedule_question": is_lesson_schedule_question,
+        "is_lesson_start_request": is_lesson_start_request,
+        "is_level_retest_request": is_level_retest_request,
+        "is_mixed_language_message": is_mixed_language_message,
+        "is_negative": is_negative,
+        "is_next_lesson_question": is_next_lesson_question,
+        "is_number_without_time_unit": is_number_without_time_unit,
+        "is_off_topic_during_assessment": is_off_topic_during_assessment,
+        "is_probable_learning_goal": is_probable_learning_goal,
+        "is_probable_person_name": is_probable_person_name,
+        "is_ready_for_lesson": is_ready_for_lesson,
+        "is_schedule_change_request": is_schedule_change_request,
+        "is_unclear_study_experience": is_unclear_study_experience,
+        "is_unclear_yes_no": is_unclear_yes_no,
+        "is_valid_placement_answer": lambda: is_valid_placement_answer,
+        "json": json,
+        "looks_like_name_correction": looks_like_name_correction,
+        "normalize_intent_text": normalize_intent_text,
+        "normalize_language_preference": normalize_language_preference,
+        "normalize_whatsapp_phone_for_send": normalize_whatsapp_phone_for_send,
+        "os": os,
+        "parse_lesson_schedule": parse_lesson_schedule,
+        "parse_practice_button_message": parse_practice_button_message,
+        "parse_quiz_button_message": parse_quiz_button_message,
+        "repeat_placement_question": repeat_placement_question,
+        "require_student_access": require_student_access,
+        "reset_lesson_flow": reset_lesson_flow,
+        "resume_stuck_guided_lesson": resume_stuck_guided_lesson,
+        "save_lesson_feedback_if_expected": save_lesson_feedback_if_expected,
+        "start_guided_lesson": start_guided_lesson,
+        "text": text,
+        "timedelta": timedelta,
+        "update_lesson_engagement": update_lesson_engagement,
+        "wants_portuguese_mode": wants_portuguese_mode,
+        "whatsapp_phone_variants": whatsapp_phone_variants,
+}
+globals().update(configure_api(api_dependencies))
 app.include_router(api_router)
 configure_automations(resolve=lambda name: globals()[name])
 configure_webhook(WebhookDependencies(resolve=lambda name: globals()[name]))
