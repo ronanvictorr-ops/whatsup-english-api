@@ -503,6 +503,25 @@ class FlowJourneyTests(unittest.TestCase):
         self.assertEqual(reply["buttons"][0]["id"], "lesson:hint")
         self.assertEqual(reply["buttons"][0]["title"], "Me de uma dica")
 
+    def test_greetings_context_answer_is_handled_without_ai_fallback(self):
+        student = self.create_student(
+            stage=7,
+            assessment_completed="Yes",
+            schedule_completed="Yes",
+            current_lesson=1,
+            lesson_stage="context_question",
+        )
+
+        with patch.object(main, "generate_ai_answer") as answer:
+            reply = self.send(student, "Hello")
+
+        answer.assert_not_called()
+        self.assertIn("esta correto", reply)
+        self.assertIn("Hi e mais casual", reply)
+        self.assertIn("Meu nome e Ana", reply)
+        self.assertNotIn("Tive um problema", reply)
+        self.assertEqual(student.lesson_stage, "short_explanation")
+
     def test_hint_button_gives_short_guided_hint(self):
         student = self.create_student(
             stage=7,
