@@ -1326,6 +1326,10 @@ def is_stuck_lesson_answer(message: str):
     if not text:
         return True
 
+    exact_stuck_markers = {
+        "???",
+        "?",
+    }
     stuck_markers = {
         "nao sei",
         "n sei",
@@ -1342,10 +1346,8 @@ def is_stuck_lesson_answer(message: str):
         "help",
         "dica",
         "hint",
-        "???",
-        "?",
     }
-    return text in stuck_markers or any(marker in text for marker in stuck_markers)
+    return text in exact_stuck_markers or text in stuck_markers or any(marker in text for marker in stuck_markers)
 
 
 def build_stuck_lesson_recovery(student: StudentDB, db: Session):
@@ -1379,31 +1381,112 @@ def build_stuck_lesson_recovery(student: StudentDB, db: Session):
     }
 
 
-def build_greetings_context_reply(student: StudentDB, message: str, db: Session):
+def build_greetings_context_reply(
+    student: StudentDB,
+    message: str,
+    db: Session,
+    answered_stage: str,
+):
     if get_current_lesson(student)["title"] != "Greetings":
-        return None
-    if get_lesson_stage(student) != "short_explanation":
         return None
 
     normalized = normalize_intent_text(message)
-    if normalized not in {"hello", "hi", "hey", "good morning"}:
-        return None
 
-    answer = (
-        f"Muito bem! \"{message.strip()}\" esta correto.\n\n"
-        "Hi e mais casual. Hello tambem esta certo e funciona bem para cumprimentar alguem.\n\n"
-        "Agora vamos dar mais um passo: como voce diria em ingles \"Meu nome e Ana\"?"
-    )
-    db.add(
-        ConversationDB(
-            student_id=student.id,
-            question=message,
-            answer=answer,
+    def save_and_return(answer: str):
+        db.add(
+            ConversationDB(
+                student_id=student.id,
+                question=message,
+                answer=answer,
+            )
         )
-    )
-    db.commit()
-    return answer
+        db.commit()
+        return answer
 
+    if answered_stage == "context_question":
+        if normalized not in {"hello", "hi", "hey", "good morning"}:
+            return None
+
+        return save_and_return(
+            f"Muito bem! \"{message.strip()}\" esta correto.\n\n"
+            "Hi e mais casual. Hello tambem esta certo e funciona bem para cumprimentar alguem.\n\n"
+            "Agora vamos dar mais um passo: como voce diria em ingles \"Meu nome e Ana\"?"
+        )
+
+    if answered_stage == "short_explanation":
+        if not (
+            normalized.startswith("my name is ")
+            or normalized.startswith("my name s ")
+            or normalized.startswith("i am ")
+            or normalized.startswith("i m ")
+        ):
+            return None
+
+        return save_and_return(
+            f"Perfeito! \"{message.strip()}\" funciona para se apresentar.\n\n"
+            "A estrutura principal e: My name is + nome.\n\n"
+            "Agora pratique a pergunta: como voce pergunta \"Qual e o seu nome?\" em ingles?"
+        )
+
+    if answered_stage in {"more_examples", "comprehension"}:
+        name_questions = {
+            "what is your name",
+            "what is your name?",
+            "whats your name",
+            "whats your name?",
+            "what s your name",
+            "what s your name?",
+            "what is you name",
+            "what is you name?",
+            "what your name",
+            "what your name?",
+        }
+        if normalized in name_questions:
+            return save_and_return(
+                "Muito bem! A forma natural e: What's your name?\n\n"
+                "Agora responda essa pergunta usando seu nome real:\n\n"
+                "What's your name?"
+            )
+        if normalized.startswith("my name is ") or normalized.startswith("i am "):
+            student.lesson_stage = LESSON_COMPLETED_STAGE
+            student.messages_in_current_lesson = 0
+            student.xp = (student.xp or 0) + 10
+            return save_and_return(
+                f"Excelente! \"{message.strip()}\" esta correto.\n\n"
+                "Hoje voce praticou cumprimentos e apresentacao em ingles: Hello, Hi, "
+                "What's your name? e My name is...\n\n"
+                "Sua missao: me mandar amanha uma frase comecando com \"My name is...\" "
+                "ou cumprimentar alguem com \"Hello\".\n\n"
+                "Quando quiser seguir, me mande: proxima aula."
+            )
+
+    if answered_stage in {
+        "structure",
+        "exercise_1",
+        "exercise_2",
+        "production",
+        "conversation",
+        "expansion",
+        "challenge",
+    } and (normalized.startswith("my name is ") or normalized.startswith("i am ")):
+        student.lesson_stage = LESSON_COMPLETED_STAGE
+        student.messages_in_current_lesson = 0
+        student.xp = (student.xp or 0) + 10
+        return save_and_return(
+            f"Boa! \"{message.strip()}\" esta correto.\n\n"
+            "Aula de cumprimentos concluida. Voce ja consegue cumprimentar e se apresentar em ingles.\n\n"
+            "Missao curta: amanha me mande \"Hello, my name is...\" com seu nome."
+        )
+
+    if answered_stage in {"more_examples", "comprehension", "structure"}:
+        return save_and_return(
+            "Quase. Vamos manter bem simples.\n\n"
+            "Para perguntar o nome: What's your name?\n"
+            "Para responder: My name is Ana.\n\n"
+            "Agora tente responder: What's your name?"
+        )
+
+    return None
 
 def get_recent_example_context(student: StudentDB, db: Session, limit: int = 8):
     recent = (
@@ -2089,10 +2172,16 @@ def process_whatsapp_message(phone: str, message: str, db: Session):
                 )
             )
 
+        answered_lesson_stage = get_lesson_stage(student)
         update_lesson_engagement(student, db)
         db.commit()
 
-        greetings_reply = build_greetings_context_reply(student, message, db)
+        greetings_reply = build_greetings_context_reply(
+            student,
+            message,
+            db,
+            answered_lesson_stage,
+        )
         if greetings_reply:
             return greetings_reply
 
