@@ -342,6 +342,10 @@ class FlowJourneyTests(unittest.TestCase):
 
         self.assertEqual(reply["type"], "buttons")
         self.assertIn("Fechamento da aula", reply["body"])
+        self.assertIn("Hoje voce aprendeu", reply["body"])
+        self.assertIn("Sua missao", reply["body"])
+        self.assertIn("Proximo passo", reply["body"])
+        self.assertIn("Pequeno passo, mas passo real", reply["body"])
         self.assertEqual(
             [button["id"] for button in reply["buttons"]],
             ["post_lesson:review", "post_lesson:practice", "post_lesson:next_preview"],

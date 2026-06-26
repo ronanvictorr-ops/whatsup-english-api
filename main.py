@@ -860,7 +860,7 @@ def build_post_lesson_feedback_message(student: StudentDB, db: Session):
     if not session:
         return None
 
-    lesson_focus = session.summary or f"Aula concluida: {session.lesson_title}."
+    lesson_focus = session.summary or f"Voce praticou {session.lesson_title}."
     records = get_recent_learning_records(student.id, db, limit=3)
     review_lines = []
 
@@ -868,19 +868,19 @@ def build_post_lesson_feedback_message(student: StudentDB, db: Session):
         if record.corrected_text:
             review_lines.append(f"- {record.corrected_text[:90]}")
 
-    review_text = "\n".join(review_lines) if review_lines else "- Vamos revisar as frases principais da aula."
+    review_text = "\n".join(review_lines) if review_lines else "- Uma frase curta usando o tema da aula."
     next_hook = build_next_lesson_preview(student, db, closing_hook=True)
 
     body = (
         "Fechamento da aula de hoje:\n\n"
-        f"{lesson_focus}\n\n"
-        "Voce praticou:\n"
-        f"- {session.lesson_title}\n"
-        "- Respostas curtas no WhatsApp\n"
-        "- Correcao com feedback imediato\n\n"
-        "Para revisar depois:\n"
+        f"Hoje voce aprendeu: {lesson_focus}\n\n"
+        "Sua missao: me mandar amanha uma frase comecando com "
+        "'Yesterday I...' ou usando uma frase da aula.\n\n"
+        "Ponto para guardar:\n"
         f"{review_text}\n\n"
+        "Proximo passo:\n"
         f"{next_hook}\n\n"
+        "Boa aula. Pequeno passo, mas passo real.\n\n"
         "De 0 a 10, quanto essa aula te ajudou hoje?\n\n"
         "Se preferir, toque em uma opcao para seguir agora:"
     )
