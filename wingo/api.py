@@ -1384,10 +1384,19 @@ def recover_student_flow(student: StudentDB, db: Session):
 
     student.current_stage = 7
     db.commit()
-    return (
-        "Tive um problema aqui. Vou retomar com voce do ponto certo.\n\n"
-        "Quando quiser continuar, me mande: vamos comecar."
-    )
+    return {
+        "type": "buttons",
+        "body": (
+            "Tive uma instabilidade aqui, mas nao vou te prender em loop.\n\n"
+            "Voce ja esta pronto para praticar. Escolha uma opcao abaixo ou me mande "
+            "uma frase/tema que eu te ajudo em portugues."
+        ),
+        "buttons": [
+            {"id": "post_lesson:practice", "title": "Praticar conversa"},
+            {"id": "return:review", "title": "Revisar"},
+            {"id": "return:topic", "title": "Mudar tema"},
+        ],
+    }
 
 
 def extract_explicit_practice_topic(message: str):

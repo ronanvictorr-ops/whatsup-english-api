@@ -217,6 +217,35 @@ class WebhookIntegrationTests(unittest.TestCase):
         self.assertEqual(delivery.attempts, 2)
         self.assertEqual(send_attempts, 2)
 
+    def test_processing_failure_for_ready_student_sends_non_looping_recovery(self):
+        student = self.db.query(StudentDB).one()
+        student.current_stage = 7
+        student.learning_goal = "Travel"
+        student.interests = "work"
+        student.assessment_completed = "Yes"
+        student.schedule_completed = "Yes"
+        student.lesson_stage = "completed"
+        self.db.commit()
+
+        with patch.object(
+            main,
+            "process_whatsapp_message",
+            side_effect=RuntimeError("openai temporary failure"),
+        ), patch.object(main, "send_whatsapp_reply", side_effect=self.sender):
+            result = self.receive(text_payload(message_id="wamid.ready-failure", text="Vamos comecar"))
+
+        self.assertEqual(result, {"status": "recovered"})
+        self.assertEqual(len(self.sent), 1)
+        recovery = self.sent[0][1]
+        self.assertEqual(recovery["type"], "buttons")
+        self.assertIn("nao vou te prender em loop", recovery["body"])
+        self.assertNotIn("vamos comecar", recovery["body"].lower())
+
+        inbound = self.db.query(ProcessedWebhookMessageDB).filter_by(
+            message_id="wamid.ready-failure"
+        ).one()
+        self.assertEqual(inbound.status, "completed")
+
     def test_processing_duplicate_returns_retryable_status(self):
         self.db.add(
             ProcessedWebhookMessageDB(
