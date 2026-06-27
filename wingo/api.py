@@ -1112,6 +1112,38 @@ def is_lesson_hint_request(message: str):
     }
 
 
+def normalize_plain_button_text(student: StudentDB, message: str):
+    if not message or message.startswith("__button__:"):
+        return message
+
+    text = normalize_intent_text(message)
+    language = get_quiz_interface_language(student, message)
+    aliases = {
+        "continuar aula": "__button__:return:continue::Continuar aula",
+        "continuar": "__button__:return:continue::Continuar aula",
+        "revisar": "__button__:return:review::Revisar",
+        "revisar erro": "__button__:return:review::Revisar erro",
+        "mudar tema": "__button__:return:topic::Mudar tema",
+        "trocar tema": "__button__:return:topic::Mudar tema",
+        "escolher tema": f"__button__:practice:choose_topic:{language}::Escolher tema",
+        "choose topic": f"__button__:practice:choose_topic:{language}::Choose topic",
+        "praticar conversa": "__button__:post_lesson:practice::Praticar conversa",
+        "practice conversation": "__button__:post_lesson:practice::Practice conversation",
+        "ver proxima": "__button__:post_lesson:next_preview::Ver proxima",
+        "ver próxima": "__button__:post_lesson:next_preview::Ver proxima",
+        "see next": "__button__:post_lesson:next_preview::See next",
+        "mais quizzes": f"__button__:practice:more_quiz:{language}::Mais quizzes",
+        "more quizzes": f"__button__:practice:more_quiz:{language}::More quizzes",
+        "praticar escrita": f"__button__:practice:writing:{language}::Praticar escrita",
+        "practice writing": f"__button__:practice:writing:{language}::Practice writing",
+    }
+
+    if is_lesson_hint_request(message):
+        return "__button__:lesson:hint::Me de uma dica"
+
+    return aliases.get(text, message)
+
+
 def build_lesson_hint_reply(student: StudentDB, message: str, db: Session):
     lesson = get_current_lesson(student)
     stage = get_lesson_stage(student)
@@ -1152,18 +1184,24 @@ def build_lesson_hint_reply(student: StudentDB, message: str, db: Session):
         db.commit()
         return reply
 
-    return generate_ai_answer(
-        student=student,
-        question=message,
-        db=db,
-        ai_question=(
-            "[Internal instruction: the student tapped a hint button because they are stuck. "
-            f"The current lesson is {lesson['title']} and the current stage is {stage}. "
-            "Give one short hint in Portuguese, one tiny English example, and ask the same exercise "
-            "again in simpler words. Do not give the full answer unless the current exercise is only "
-            "a greeting. Keep it under 70 words.]"
-        ),
+    design = get_lesson_design(lesson)
+    focus = lesson.get("focus") or lesson["title"]
+    example = design["examples"][0] if design.get("examples") else "I practice every day."
+    reply = (
+        f"Dica curta: esta aula e sobre {lesson['title']}.\n"
+        f"O foco e {focus}.\n\n"
+        f"Exemplo simples: {example}\n\n"
+        "Agora tente responder com uma frase curta em ingles. Se travar, pode mandar: nao sei."
     )
+    db.add(
+        ConversationDB(
+            student_id=student.id,
+            question=message,
+            answer=reply,
+        )
+    )
+    db.commit()
+    return reply
 
 
 def handle_choice_button(student: StudentDB, button_choice: dict, db: Session):
@@ -1663,6 +1701,8 @@ def process_whatsapp_message(phone: str, message: str, db: Session):
     ):
         student.preferred_language = "Portuguese"
         db.commit()
+
+    message = normalize_plain_button_text(student, message)
 
     choice_button = parse_choice_button_message(message)
     if choice_button:

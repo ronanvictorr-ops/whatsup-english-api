@@ -610,6 +610,40 @@ class FlowJourneyTests(unittest.TestCase):
         self.assertNotIn("Tive um problema", reply)
         self.assertIn("What's your name", reply)
 
+    def test_plain_hint_text_works_for_non_greetings_lesson_without_ai(self):
+        student = self.create_student(
+            stage=7,
+            assessment_completed="Yes",
+            schedule_completed="Yes",
+            current_lesson=22,
+            lesson_stage="short_explanation",
+        )
+
+        with patch.object(main, "generate_ai_answer") as answer:
+            reply = self.send(student, "Me de uma dica")
+
+        answer.assert_not_called()
+        self.assertNotIn("Tive um problema", reply)
+        self.assertIn("Past Simple", reply)
+
+    def test_plain_text_practice_buttons_are_handled_like_payloads(self):
+        student = self.create_student(
+            stage=7,
+            assessment_completed="Yes",
+            schedule_completed="Yes",
+            lesson_stage="completed",
+        )
+
+        more_quiz = self.send(student, "Mais quizzes")
+        choose_topic = self.send(student, "Escolher tema")
+        writing = self.send(student, "Praticar escrita")
+
+        self.assertEqual(more_quiz["type"], "buttons")
+        self.assertIn("Pergunta 1 de 3", more_quiz["body"])
+        self.assertIn("Qual tema", choose_topic)
+        self.assertEqual(student.current_stage, 84)
+        self.assertIn("duas frases curtas", writing)
+
     def test_basic_levels_always_use_portuguese_guidance(self):
         for level in ("Basic", "Basic 2"):
             instruction = main.get_language_instruction("English", level)
