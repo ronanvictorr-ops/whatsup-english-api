@@ -3955,6 +3955,7 @@ api_dependencies = {
         "is_basic_level": is_basic_level,
         "is_exercise_request": is_exercise_request,
         "is_lesson_completed": is_lesson_completed,
+        "has_started_lesson_today": has_started_lesson_today,
         "is_lesson_schedule_question": is_lesson_schedule_question,
         "is_lesson_start_request": is_lesson_start_request,
         "is_level_retest_request": is_level_retest_request,
