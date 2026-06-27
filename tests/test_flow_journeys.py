@@ -133,6 +133,28 @@ class FlowJourneyTests(unittest.TestCase):
         self.assertIsInstance(reply, list)
         self.assertTrue(reply)
 
+    def test_recovery_for_ready_student_does_not_ask_to_start_again(self):
+        student = self.create_student(
+            stage=7,
+            learning_goal="Travel",
+            interests="work",
+            assessment_completed="Yes",
+            schedule_completed="Yes",
+            lesson_stage="completed",
+        )
+
+        reply = main.recover_student_flow(student, self.db)
+
+        self.assertIsInstance(reply, dict)
+        self.assertEqual(reply["type"], "buttons")
+        self.assertIn("nao vou te prender em loop", reply["body"])
+        self.assertNotIn("vamos comecar", reply["body"].lower())
+        self.assertEqual(
+            [button["id"] for button in reply["buttons"]],
+            ["post_lesson:practice", "return:review", "return:topic"],
+        )
+        self.assertEqual(student.current_stage, 7)
+
     def test_writing_feedback_is_saved_and_can_return_to_quiz(self):
         student = self.create_student(stage=84, assessment_completed="Yes")
         fake_client = SimpleNamespace(
