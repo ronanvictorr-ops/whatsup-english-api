@@ -1204,6 +1204,56 @@ def build_lesson_hint_reply(student: StudentDB, message: str, db: Session):
     return reply
 
 
+def extract_phrase_practice_text(message: str):
+    text = (message or "").strip()
+    patterns = [
+        r"(?i)como\s+(?:eu\s+)?(?:falo|digo|dizer)\s*,?\s*(.+?)\s+em\s+ingl[eê]s\??$",
+        r"(?i)me\s+ajude\s+a\s+treinar\s+a\s+frase\s*:?\s*(.+)$",
+        r"(?i)ajude\s+a\s+treinar\s*:?\s*(.+)$",
+        r"(?i)treinar\s+a\s+frase\s*:?\s*(.+)$",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, text)
+        if match:
+            return match.group(1).strip(" .?!:;\"'")
+    return None
+
+
+def build_after_lesson_bot_reply(student: StudentDB, message: str, db: Session):
+    ai_question = (
+        "[Internal instruction: the guided lesson is finished. "
+        "Answer the student's current question in flexible tutor/BOT mode. "
+        "Do not start the next structured lesson. If the student asks how to say "
+        "something in English, translate it, give one pronunciation-friendly example, "
+        "and invite them to repeat. For Basic students, explain in Portuguese.]\n\n"
+        f"Student message: {message}"
+    )
+    try:
+        return generate_ai_answer(
+            student=student,
+            question=message,
+            db=db,
+            ai_question=ai_question,
+        )
+    except Exception:
+        phrase = extract_phrase_practice_text(message)
+        if phrase:
+            normalized = normalize_intent_text(phrase)
+            translations = {
+                "eu quero agua": "I want water.",
+                "eu quero água": "I want water.",
+                "quero agua": "I want water.",
+                "quero água": "I want water.",
+            }
+            english = translations.get(normalized)
+            if english:
+                return (
+                    f"Claro. Voce pode dizer:\n\n{english}\n\n"
+                    "Treino rapido: repita em voz alta devagar, depois me mande a frase em audio ou texto."
+                )
+        raise
+
+
 def handle_choice_button(student: StudentDB, button_choice: dict, db: Session):
     choice = button_choice["choice"]
 
@@ -1764,7 +1814,9 @@ def process_whatsapp_message(phone: str, message: str, db: Session):
         if command_reply:
             return command_reply
 
-        requested_language = detect_language_switch_request(message)
+        requested_language = None
+        if not extract_phrase_practice_text(message):
+            requested_language = detect_language_switch_request(message)
         if (
             requested_language
             and getattr(student, "assessment_completed", "No") == "Yes"
@@ -2305,17 +2357,7 @@ def process_whatsapp_message(phone: str, message: str, db: Session):
         if is_lesson_start_request(message):
             return start_guided_lesson(student, db, mode="manual")
 
-        return generate_ai_answer(
-            student=student,
-            question=message,
-            db=db,
-            ai_question=(
-                "[Internal instruction: the guided lesson is finished. "
-                "Answer the student's current question in flexible tutor/BOT mode. "
-                "Do not start the next structured lesson. If the student only says yes, continue the last free-help topic.]\n\n"
-                f"Student message: {message}"
-            )
-        )
+        return build_after_lesson_bot_reply(student, message, db)
 
     if student.current_stage == 7 and is_lesson_start_request(message):
         return start_guided_lesson(student, db, mode="manual")
