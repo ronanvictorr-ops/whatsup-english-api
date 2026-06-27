@@ -446,9 +446,16 @@ class FlowJourneyTests(unittest.TestCase):
 
         review = self.send(student, "__button__:return:review::Revisar")
         topic = self.send(student, "__button__:return:topic::Mudar tema")
+        with patch.object(main, "generate_ai_answer") as answer:
+            pronunciation = self.send(student, "Pronuncia")
 
         self.assertIn("Vamos revisar", review)
         self.assertIn("Greetings", review)
+        self.assertIn("Qual tema", topic)
+        answer.assert_not_called()
+        self.assertNotIn("Tive uma instabilidade", pronunciation)
+        self.assertIn("vamos treinar pronuncia", pronunciation)
+        self.assertIn("me mande essa frase em audio", pronunciation)
 
     def test_smart_return_prompt_continues_unfinished_lesson(self):
         student = self.create_student(

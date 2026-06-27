@@ -1277,6 +1277,8 @@ def handle_choice_button(student: StudentDB, button_choice: dict, db: Session):
         return build_review_message(student, db)
 
     if choice == "topic":
+        mark_awaiting_practice_topic(student)
+        db.commit()
         return (
             "Combinado. Qual tema voce quer praticar agora?\n\n"
             "Pode ser: viagem, trabalho, futuro, entrevista ou pronuncia."
@@ -1430,6 +1432,102 @@ def extract_explicit_practice_topic(message: str):
         return aliases.get(topic, topic)
 
     return None
+
+
+def get_onboarding_notes_list(student: StudentDB):
+    try:
+        notes = json.loads(student.onboarding_notes or "[]")
+    except json.JSONDecodeError:
+        return []
+
+    return notes if isinstance(notes, list) else []
+
+
+def mark_awaiting_practice_topic(student: StudentDB):
+    notes = [
+        note for note in get_onboarding_notes_list(student)
+        if note.get("key") != "awaiting_practice_topic"
+    ]
+    notes.append(
+        {
+            "key": "awaiting_practice_topic",
+            "value": "Yes",
+            "created_at": datetime.utcnow().isoformat(),
+        }
+    )
+    student.onboarding_notes = json.dumps(notes, ensure_ascii=False)
+
+
+def consume_awaiting_practice_topic(student: StudentDB):
+    notes = get_onboarding_notes_list(student)
+    waiting = any(
+        note.get("key") == "awaiting_practice_topic" and note.get("value") == "Yes"
+        for note in notes
+    )
+    if not waiting:
+        return False
+
+    student.onboarding_notes = json.dumps(
+        [note for note in notes if note.get("key") != "awaiting_practice_topic"],
+        ensure_ascii=False,
+    )
+    return True
+
+
+def normalize_practice_topic_choice(message: str):
+    text = normalize_intent_text(message)
+    if not text or text in {"agora", "ingles", "english", "exercicios", "exercicio", "quiz"}:
+        return None
+
+    aliases = {
+        "future": "Future: will and going to",
+        "futuro": "Future: will and going to",
+        "past simple": "Past Simple",
+        "simple past": "Past Simple",
+        "passado simples": "Past Simple",
+        "present continuous": "Present Continuous",
+        "presente continuo": "Present Continuous",
+        "present simple": "Present Simple",
+        "presente simples": "Present Simple",
+        "pronuncia": "Pronunciation",
+        "pronúncia": "Pronunciation",
+        "pronunciation": "Pronunciation",
+        "viagem": "Travel English",
+        "travel": "Travel English",
+        "trabalho": "Work English",
+        "work": "Work English",
+        "entrevista": "Job interview English",
+        "interview": "Job interview English",
+    }
+    return aliases.get(text, message.strip())
+
+
+def build_topic_practice_reply(student: StudentDB, topic: str, message: str, db: Session):
+    if normalize_intent_text(topic) == "pronunciation":
+        student.current_stage = 7
+        db.commit()
+        return (
+            "Perfeito, vamos treinar pronuncia.\n\n"
+            "Comece com uma frase curta:\n\n"
+            "Hello, my name is Ana.\n\n"
+            "Missao rapida: me mande essa frase em audio. Eu vou avaliar clareza, ritmo e pronuncia."
+        )
+
+    return generate_ai_answer(
+        student=student,
+        question=message,
+        db=db,
+        ai_question=(
+            "[Internal instruction: the student explicitly chose a new practice topic. "
+            f"Switch immediately to this topic: {topic}. "
+            "Do not continue Past Simple or the previous quiz unless that is the chosen topic. "
+            "Acknowledge the topic, give one fresh level-appropriate example that does not "
+            "repeat recent conversation examples, then ask exactly one short exercise about it. "
+            "Use Portuguese guidance for Basic and Basic 2 students.]\n\n"
+            f"Recent examples to avoid:\n{get_recent_example_context(student, db)}\n\n"
+            f"Student message: {message}"
+        ),
+    )
 
 
 def is_audio_replay_request(message: str):
@@ -2288,26 +2386,22 @@ def process_whatsapp_message(phone: str, message: str, db: Session):
         return generate_writing_practice_feedback(student, message, db)
 
     if student.current_stage == 7:
+        if consume_awaiting_practice_topic(student):
+            requested_topic = normalize_practice_topic_choice(message)
+            if not requested_topic:
+                db.commit()
+                return (
+                    "Me diga o tema em uma palavra ou frase curta.\n\n"
+                    "Pode ser: pronuncia, viagem, trabalho, futuro ou entrevista."
+                )
+            return build_topic_practice_reply(student, requested_topic, message, db)
+
         if is_audio_replay_request(message):
             return build_audio_replay(student, db)
 
         requested_topic = extract_explicit_practice_topic(message)
         if requested_topic:
-            return generate_ai_answer(
-                student=student,
-                question=message,
-                db=db,
-                ai_question=(
-                    "[Internal instruction: the student explicitly chose a new practice topic. "
-                    f"Switch immediately to this topic: {requested_topic}. "
-                    "Do not continue Past Simple or the previous quiz unless that is the chosen topic. "
-                    "Acknowledge the topic, give one fresh level-appropriate example that does not "
-                    "repeat recent conversation examples, then ask exactly one short exercise about it. "
-                    "Use Portuguese guidance for Basic and Basic 2 students.]\n\n"
-                    f"Recent examples to avoid:\n{get_recent_example_context(student, db)}\n\n"
-                    f"Student message: {message}"
-                ),
-            )
+            return build_topic_practice_reply(student, requested_topic, message, db)
 
         if is_exercise_request(message) and has_recent_past_simple_context(
             student,
