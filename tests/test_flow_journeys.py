@@ -587,12 +587,28 @@ class FlowJourneyTests(unittest.TestCase):
             lesson_stage="context_question",
         )
 
-        with patch.object(main, "generate_ai_answer", return_value="Dica curta.") as answer:
+        with patch.object(main, "generate_ai_answer") as answer:
             reply = self.send(student, "__button__:lesson:hint::Me de uma dica")
 
-        self.assertEqual(reply, "Dica curta.")
-        self.assertIn("hint button", answer.call_args.kwargs["ai_question"])
-        self.assertIn("under 70 words", answer.call_args.kwargs["ai_question"])
+        answer.assert_not_called()
+        self.assertIn("Dica curta", reply)
+        self.assertIn("Hello", reply)
+
+    def test_plain_hint_text_does_not_fall_into_recovery_loop(self):
+        student = self.create_student(
+            stage=7,
+            assessment_completed="Yes",
+            schedule_completed="Yes",
+            current_lesson=1,
+            lesson_stage="more_examples",
+        )
+
+        with patch.object(main, "generate_ai_answer") as answer:
+            reply = self.send(student, "Me de uma dica")
+
+        answer.assert_not_called()
+        self.assertNotIn("Tive um problema", reply)
+        self.assertIn("What's your name", reply)
 
     def test_basic_levels_always_use_portuguese_guidance(self):
         for level in ("Basic", "Basic 2"):
