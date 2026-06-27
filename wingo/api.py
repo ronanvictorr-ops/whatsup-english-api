@@ -1100,23 +1100,77 @@ def parse_choice_button_message(message: str):
     }
 
 
+def is_lesson_hint_request(message: str):
+    text = normalize_intent_text(message)
+    return text in {
+        "me de uma dica",
+        "me da uma dica",
+        "dica",
+        "hint",
+        "help",
+        "me ajuda",
+    }
+
+
+def build_lesson_hint_reply(student: StudentDB, message: str, db: Session):
+    lesson = get_current_lesson(student)
+    stage = get_lesson_stage(student)
+
+    if lesson["title"] == "Greetings":
+        hints = {
+            "context_question": (
+                "Dica curta: para dizer 'Ola' em ingles, voce pode usar Hello.\n\n"
+                "Agora tente escrever so a palavra em ingles."
+            ),
+            "short_explanation": (
+                "Dica curta: comece com My name is e depois coloque o nome.\n\n"
+                "Exemplo: My name is Ana.\n\n"
+                "Agora tente escrever a frase completa."
+            ),
+            "more_examples": (
+                "Dica curta: para perguntar o nome, comece com What.\n\n"
+                "A pergunta completa e: What's your name?\n\n"
+                "Agora tente escrever em ingles."
+            ),
+            "comprehension": (
+                "Dica curta: responda com My name is + seu nome.\n\n"
+                "Exemplo: My name is Ana.\n\n"
+                "Agora responda usando seu nome real."
+            ),
+        }
+        reply = hints.get(stage) or (
+            "Dica curta: nesta aula usamos Hello, What's your name? e My name is...\n\n"
+            "Tente responder com uma frase bem curta em ingles."
+        )
+        db.add(
+            ConversationDB(
+                student_id=student.id,
+                question=message,
+                answer=reply,
+            )
+        )
+        db.commit()
+        return reply
+
+    return generate_ai_answer(
+        student=student,
+        question=message,
+        db=db,
+        ai_question=(
+            "[Internal instruction: the student tapped a hint button because they are stuck. "
+            f"The current lesson is {lesson['title']} and the current stage is {stage}. "
+            "Give one short hint in Portuguese, one tiny English example, and ask the same exercise "
+            "again in simpler words. Do not give the full answer unless the current exercise is only "
+            "a greeting. Keep it under 70 words.]"
+        ),
+    )
+
+
 def handle_choice_button(student: StudentDB, button_choice: dict, db: Session):
     choice = button_choice["choice"]
 
     if choice == "hint":
-        lesson = get_current_lesson(student)
-        return generate_ai_answer(
-            student=student,
-            question=button_choice["title"],
-            db=db,
-            ai_question=(
-                "[Internal instruction: the student tapped a hint button because they are stuck. "
-                f"The current lesson is {lesson['title']} and the current stage is {get_lesson_stage(student)}. "
-                "Give one short hint in Portuguese, one tiny English example, and ask the same exercise "
-                "again in simpler words. Do not give the full answer unless the current exercise is only "
-                "a greeting. Keep it under 70 words.]"
-            ),
-        )
+        return build_lesson_hint_reply(student, button_choice["title"], db)
 
     if choice == "review":
         return build_review_message(student, db)
@@ -1703,6 +1757,13 @@ def process_whatsapp_message(phone: str, message: str, db: Session):
             and is_next_lesson_question(message)
         ):
             return build_next_lesson_preview(student, db)
+
+        if (
+            student.current_stage == 7
+            and not is_lesson_completed(student)
+            and is_lesson_hint_request(message)
+        ):
+            return build_lesson_hint_reply(student, message, db)
 
         if (
             student.current_stage == 7
