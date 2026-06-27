@@ -1288,17 +1288,7 @@ def handle_choice_button(student: StudentDB, button_choice: dict, db: Session):
         return build_next_lesson_preview(student, db)
 
     if choice == "practice":
-        return generate_ai_answer(
-            student=student,
-            question=button_choice["title"],
-            db=db,
-            ai_question=(
-                "[Internal instruction: the student tapped a post-lesson button to practice "
-                "conversation. Start a tiny conversation practice connected to the student's "
-                "level, interests, and recent lesson. Ask exactly one short question. For Basic "
-                "students, explain in Portuguese and keep the English sentence simple.]"
-            ),
-        )
+        return build_safe_conversation_practice(student, button_choice["title"], db)
 
     if choice == "personal":
         return generate_ai_answer(
@@ -1528,6 +1518,36 @@ def build_topic_practice_reply(student: StudentDB, topic: str, message: str, db:
             f"Student message: {message}"
         ),
     )
+
+
+def build_safe_conversation_practice(student: StudentDB, button_title: str, db: Session):
+    try:
+        return generate_ai_answer(
+            student=student,
+            question=button_title,
+            db=db,
+            ai_question=(
+                "[Internal instruction: the student tapped a post-lesson button to practice "
+                "conversation. Start a tiny conversation practice connected to the student's "
+                "level, interests, and recent lesson. Ask exactly one short question. For Basic "
+                "students, explain in Portuguese and keep the English sentence simple.]"
+            ),
+        )
+    except Exception:
+        lesson = get_current_lesson(student)
+        if is_basic_level(getattr(student, "level", None)):
+            return (
+                "Vamos fazer uma mini conversa bem simples.\n\n"
+                "Responda em ingles com uma frase curta:\n\n"
+                "What do you like?\n\n"
+                "Exemplo: I like music."
+            )
+
+        return (
+            f"Let's do a quick conversation practice about {format_lesson_title(lesson)}.\n\n"
+            "Answer with one sentence:\n\n"
+            "What is one thing you did recently?"
+        )
 
 
 def is_audio_replay_request(message: str):

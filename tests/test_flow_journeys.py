@@ -534,6 +534,46 @@ class FlowJourneyTests(unittest.TestCase):
         self.assertEqual(reply, "Pergunta curta.")
         self.assertIn("post-lesson button", answer.call_args.kwargs["ai_question"])
 
+    def test_post_lesson_practice_buttons_have_safe_fallback_when_ai_fails(self):
+        student = self.create_student(
+            stage=7,
+            level="Basic",
+            assessment_completed="Yes",
+            schedule_completed="Yes",
+            lesson_stage="completed",
+        )
+
+        with patch.object(main, "generate_ai_answer", side_effect=RuntimeError("offline")):
+            post_lesson = self.send(student, "__button__:post_lesson:practice::Praticar conversa")
+            return_practice = self.send(student, "__button__:return:practice::Mini pratica")
+            plain_text = self.send(student, "Praticar conversa")
+
+        for reply in (post_lesson, return_practice, plain_text):
+            self.assertNotIn("Tive uma instabilidade", reply)
+            self.assertNotIn("Tive um problema", reply)
+            self.assertIn("mini conversa", reply)
+            self.assertIn("What do you like?", reply)
+
+    def test_review_buttons_are_local_and_do_not_call_ai(self):
+        student = self.create_student(
+            stage=7,
+            assessment_completed="Yes",
+            schedule_completed="Yes",
+            lesson_stage="completed",
+        )
+
+        with patch.object(main, "generate_ai_answer") as answer:
+            post_lesson = self.send(student, "__button__:post_lesson:review::Revisar")
+            return_review = self.send(student, "__button__:return:review::Revisar")
+            plain_text = self.send(student, "Revisar")
+
+        answer.assert_not_called()
+        for reply in (post_lesson, return_review, plain_text):
+            self.assertNotIn("Tive uma instabilidade", reply)
+            self.assertNotIn("Tive um problema", reply)
+            self.assertIn("Vamos revisar", reply)
+            self.assertIn("Greetings", reply)
+
     def test_short_time_request_switches_to_two_minute_micro_lesson(self):
         student = self.create_student(
             stage=7,
