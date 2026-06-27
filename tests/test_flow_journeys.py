@@ -545,6 +545,40 @@ class FlowJourneyTests(unittest.TestCase):
         self.assertEqual(student.messages_in_current_lesson, 0)
         self.assertEqual(student.xp, 10)
 
+    def test_greetings_active_session_resume_does_not_repeat_recovery_message(self):
+        student = self.create_student(
+            stage=7,
+            assessment_completed="Yes",
+            schedule_completed="Yes",
+            current_lesson=1,
+            lesson_stage="short_explanation",
+            messages_in_current_lesson=1,
+        )
+        self.db.add(
+            LessonSessionDB(
+                student_id=student.id,
+                lesson_number=1,
+                lesson_title="Greetings",
+                status="started",
+            )
+        )
+        self.db.add(
+            ConversationDB(
+                student_id=student.id,
+                question="Hello",
+                answer="Muito bem! Hello esta correto.",
+            )
+        )
+        self.db.commit()
+
+        with patch.object(main, "generate_ai_answer") as answer:
+            reply = self.send(student, "Vamos comecar")
+
+        answer.assert_not_called()
+        self.assertNotIn("Tive um problema", reply)
+        self.assertIn("Meu nome e Ana", reply)
+        self.assertEqual(student.lesson_stage, "short_explanation")
+
     def test_hint_button_gives_short_guided_hint(self):
         student = self.create_student(
             stage=7,

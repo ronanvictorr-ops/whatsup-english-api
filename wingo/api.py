@@ -1488,6 +1488,68 @@ def build_greetings_context_reply(
 
     return None
 
+
+def build_greetings_resume_reply(student: StudentDB, db: Session):
+    if get_current_lesson(student)["title"] != "Greetings" or is_lesson_completed(student):
+        return None
+
+    active_session = (
+        db.query(LessonSessionDB)
+        .filter(
+            LessonSessionDB.student_id == student.id,
+            LessonSessionDB.status == "started",
+        )
+        .order_by(LessonSessionDB.id.desc())
+        .first()
+    )
+    if not active_session:
+        return None
+
+    student.current_stage = 7
+    stage = get_lesson_stage(student)
+
+    if stage == "context_question":
+        db.commit()
+        return build_lesson_opening_replies(student, db)
+
+    prompts = {
+        "short_explanation": (
+            "Vamos retomar do ponto certo.\n\n"
+            "Voce ja praticou o cumprimento. Agora me responda:\n\n"
+            "Como voce diria em ingles \"Meu nome e Ana\"?"
+        ),
+        "more_examples": (
+            "Vamos retomar do ponto certo.\n\n"
+            "Agora pratique a pergunta: como voce pergunta \"Qual e o seu nome?\" em ingles?"
+        ),
+        "comprehension": (
+            "Vamos retomar do ponto certo.\n\n"
+            "Responda essa pergunta usando seu nome real:\n\n"
+            "What's your name?"
+        ),
+        "structure": (
+            "Vamos retomar do ponto certo.\n\n"
+            "Para perguntar o nome: What's your name?\n"
+            "Para responder: My name is Ana.\n\n"
+            "Agora tente responder: What's your name?"
+        ),
+    }
+    reply = prompts.get(stage)
+
+    if not reply:
+        return None
+
+    db.add(
+        ConversationDB(
+            student_id=student.id,
+            question="resume:greetings",
+            answer=reply,
+        )
+    )
+    db.commit()
+    return reply
+
+
 def get_recent_example_context(student: StudentDB, db: Session, limit: int = 8):
     recent = (
         db.query(ConversationDB)
@@ -2128,6 +2190,11 @@ def process_whatsapp_message(phone: str, message: str, db: Session):
         return "Voce ainda nao definiu um horario. Me diga que horas prefere receber sua aula diaria."
 
     if student.current_stage == 7 and is_lesson_start_request(message):
+        greetings_resume = build_greetings_resume_reply(student, db)
+
+        if greetings_resume is not None:
+            return greetings_resume
+
         resumed_answer = resume_stuck_guided_lesson(student, message, db)
 
         if resumed_answer is not None:
