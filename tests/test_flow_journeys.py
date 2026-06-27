@@ -657,6 +657,26 @@ class FlowJourneyTests(unittest.TestCase):
         self.assertIn("Dica curta", reply)
         self.assertIn("Hello", reply)
 
+    def test_plain_continue_after_lesson_completed_today_does_not_loop(self):
+        student = self.create_student(
+            stage=7,
+            assessment_completed="Yes",
+            schedule_completed="Yes",
+            current_lesson=1,
+            lesson_stage="completed",
+            last_lesson_date=main.today_key(),
+        )
+
+        with patch.object(main, "generate_ai_answer", return_value="Podemos continuar conversando por aqui."):
+            first_reply = self.send(student, "continuar")
+            second_reply = self.send(student, "continuar")
+
+        self.assertEqual(first_reply, "Podemos continuar conversando por aqui.")
+        self.assertEqual(second_reply, "Podemos continuar conversando por aqui.")
+        self.assertNotIn("Por hoje ja fizemos uma aula guiada", first_reply)
+        self.assertNotIn("Por hoje ja fizemos uma aula guiada", second_reply)
+        self.assertEqual(student.lesson_stage, "completed")
+
     def test_plain_hint_text_does_not_fall_into_recovery_loop(self):
         student = self.create_student(
             stage=7,
