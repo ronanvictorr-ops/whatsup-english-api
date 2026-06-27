@@ -1208,6 +1208,9 @@ def extract_phrase_practice_text(message: str):
     text = (message or "").strip()
     patterns = [
         r"(?i)como\s+(?:eu\s+)?(?:falo|digo|dizer)\s*,?\s*(.+?)\s+em\s+ingl[eê]s\??$",
+        r"(?i)como\s+(?:eu\s+)?(?:pe[cç]o|pedir)\s+(.+?)\s+em\s+ingl[eê]s\??$",
+        r"(?i)me\s+ajude\s+a\s+(?:pedir|falar|dizer)\s+(.+?)\s+em\s+ingl[eê]s\??$",
+        r"(?i)quero\s+(?:pedir|falar|dizer)\s+(.+?)\s+em\s+ingl[eê]s\??$",
         r"(?i)me\s+ajude\s+a\s+treinar\s+a\s+frase\s*:?\s*(.+)$",
         r"(?i)ajude\s+a\s+treinar\s*:?\s*(.+)$",
         r"(?i)treinar\s+a\s+frase\s*:?\s*(.+)$",
@@ -1244,6 +1247,8 @@ def build_after_lesson_bot_reply(student: StudentDB, message: str, db: Session):
                 "eu quero água": "I want water.",
                 "quero agua": "I want water.",
                 "quero água": "I want water.",
+                "agua": "Can I have some water?",
+                "água": "Can I have some water?",
             }
             english = translations.get(normalized)
             if english:

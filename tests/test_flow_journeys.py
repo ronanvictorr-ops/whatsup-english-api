@@ -352,6 +352,37 @@ class FlowJourneyTests(unittest.TestCase):
         self.assertNotIn("Tive um problema", reply)
         self.assertIn("I want water", reply)
 
+    def test_after_lesson_request_to_ask_for_water_stays_in_bot_mode(self):
+        student = self.create_student(
+            stage=7,
+            level="Basic",
+            assessment_completed="Yes",
+            schedule_completed="Yes",
+            lesson_stage="completed",
+        )
+
+        with patch.object(main, "generate_ai_answer", return_value="Diga: Can I have some water?") as answer:
+            reply = self.send(student, "Me ajude a pedir agua em ingles")
+
+        self.assertEqual(reply, "Diga: Can I have some water?")
+        self.assertIn("flexible tutor/BOT mode", answer.call_args.kwargs["ai_question"])
+        self.assertNotIn("Nos niveis basicos", reply)
+
+    def test_after_lesson_request_to_ask_for_water_has_safe_fallback(self):
+        student = self.create_student(
+            stage=7,
+            level="Basic",
+            assessment_completed="Yes",
+            schedule_completed="Yes",
+            lesson_stage="completed",
+        )
+
+        with patch.object(main, "generate_ai_answer", side_effect=RuntimeError("offline")):
+            reply = self.send(student, "Me ajude a pedir agua em ingles")
+
+        self.assertNotIn("Tive um problema", reply)
+        self.assertIn("Can I have some water", reply)
+
     def test_post_lesson_feedback_uses_choice_buttons(self):
         student = self.create_student(
             stage=7,
