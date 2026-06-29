@@ -42,10 +42,14 @@ def build_return_choice_buttons(student: StudentDB | None = None, db: Session | 
         try:
             return _resolve("build_smart_return_prompt")(student, db)
         except Exception as error:
+            try:
+                db.rollback()
+            except Exception:
+                pass
             log_event(
                 "smart_return_prompt_failed",
                 student_id=getattr(student, "id", None),
-                error=str(error),
+                error_type=type(error).__name__,
             )
 
     return {

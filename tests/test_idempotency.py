@@ -1,6 +1,8 @@
 import unittest
+from unittest.mock import patch
 
 from sqlalchemy import create_engine
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import sessionmaker
 
 from database import Base
@@ -57,6 +59,40 @@ class IdempotencyTests(unittest.TestCase):
         send_reply_once(**kwargs)
         self.assertEqual(len(calls), 1)
         delivery = self.db.query(OutboundDeliveryDB).one()
+        self.assertEqual(delivery.status, "sent")
+        self.assertEqual(delivery.meta_message_id, "meta-1")
+
+    def test_outbound_reply_rolls_back_and_retries_after_aborted_transaction(self):
+        calls = []
+        original_query = self.db.query
+        query_attempts = 0
+
+        def sender(phone, reply):
+            calls.append((phone, reply))
+            return {"messages": [{"id": "meta-1"}]}
+
+        def flaky_query(*args, **kwargs):
+            nonlocal query_attempts
+            if args and args[0] is OutboundDeliveryDB and query_attempts == 0:
+                query_attempts += 1
+                raise SQLAlchemyError("current transaction is aborted")
+            return original_query(*args, **kwargs)
+
+        with patch.object(self.db, "query", side_effect=flaky_query), patch.object(
+            self.db, "rollback", wraps=self.db.rollback
+        ) as rollback:
+            send_reply_once(
+                db=self.db,
+                idempotency_key="msg-aborted:0",
+                phone="5511",
+                reply="hello",
+                sender=sender,
+                reply_text=str,
+            )
+
+        self.assertEqual(len(calls), 1)
+        rollback.assert_called()
+        delivery = original_query(OutboundDeliveryDB).one()
         self.assertEqual(delivery.status, "sent")
         self.assertEqual(delivery.meta_message_id, "meta-1")
 

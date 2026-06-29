@@ -172,6 +172,23 @@ class WebhookIntegrationTests(unittest.TestCase):
         self.assertEqual(len(self.sent), 1)
         self.assertEqual(self.sent[0][1], "first reply")
 
+    def test_return_prompt_failure_rolls_back_before_fallback_buttons(self):
+        student = self.db.query(StudentDB).one()
+
+        with patch.object(
+            main,
+            "build_smart_return_prompt",
+            side_effect=RuntimeError("prompt failed"),
+        ), patch.object(self.db, "rollback", wraps=self.db.rollback) as rollback:
+            prompt = webhook.build_return_choice_buttons(student, self.db)
+
+        rollback.assert_called()
+        self.assertEqual(prompt["type"], "buttons")
+        self.assertEqual(
+            [button["id"] for button in prompt["buttons"]],
+            ["return:continue", "return:review", "return:topic"],
+        )
+
     def test_reply_delay_is_longer_after_video(self):
         text_delay = webhook.reply_delay_seconds("Mensagem curta.")
         video_delay = webhook.reply_delay_seconds(
