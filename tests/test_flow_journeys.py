@@ -554,6 +554,25 @@ class FlowJourneyTests(unittest.TestCase):
             self.assertIn("mini conversa", reply)
             self.assertIn("What do you like?", reply)
 
+    def test_practice_button_exits_recovery_when_openai_client_is_unavailable(self):
+        student = self.create_student(
+            stage=7,
+            level="Basic",
+            assessment_completed="Yes",
+            schedule_completed="Yes",
+            lesson_stage="completed",
+        )
+
+        with patch.object(main, "get_openai_client", side_effect=RuntimeError("offline")):
+            button_reply = self.send(student, "__button__:post_lesson:practice::Praticar conversa")
+            plain_reply = self.send(student, "Praticar conversa")
+
+        for reply in (button_reply, plain_reply):
+            self.assertNotIn("instabilidade", reply.lower())
+            self.assertNotIn("correcao inteligente", reply.lower())
+            self.assertIn("mini conversa", reply)
+            self.assertIn("What do you like?", reply)
+
     def test_review_buttons_are_local_and_do_not_call_ai(self):
         student = self.create_student(
             stage=7,
