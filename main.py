@@ -65,6 +65,12 @@ from wingo.idempotency import (
     send_reply_once,
 )
 from wingo.retries import call_with_retry, http_get_with_retry, http_post_with_retry
+from wingo.ai_resilience import (
+    build_ai_unavailable_reply,
+    build_writing_practice_fallback,
+    get_openai_text,
+)
+from wingo.level_estimation import estimate_level_from_study_history
 from wingo.personal_memory import (
     get_recent_personal_notes_summary,
     save_personal_notes_if_needed,
@@ -349,48 +355,6 @@ PLACEMENT_TEST_QUESTIONS_BY_LEVEL = {
         "Question 5 of 5: tell a short story using natural connectors like however, although, and eventually.",
     ],
 }
-
-
-def estimate_level_from_study_history(message: str):
-    text = (message or "").strip().lower()
-    text = unicodedata.normalize("NFKD", text)
-    text = "".join(char for char in text if not unicodedata.combining(char))
-
-    year_match = re.search(r"(\d+)\s*(ano|anos|year|years)", text)
-    month_match = re.search(r"(\d+)\s*(mes|meses|month|months)", text)
-
-    years = int(year_match.group(1)) if year_match else 0
-    months = int(month_match.group(1)) if month_match else 0
-    total_months = years * 12 + months
-
-    if total_months >= 36:
-        return "Advanced"
-
-    if total_months >= 12:
-        return "Intermediate"
-
-    if total_months >= 3:
-        return "Basic 2"
-
-    if is_negative(text) or "nunca" in text or "zero" in text:
-        return "Basic"
-
-    if "fluente" in text or "fluent" in text or "c2" in text:
-        return "Fluent"
-
-    if "avanc" in text or "advanced" in text or "c1" in text:
-        return "Advanced"
-
-    if "intermedi" in text or "b1" in text or "b2" in text:
-        return "Intermediate"
-
-    if "basic 2" in text or "básico 2" in text or "a1+" in text:
-        return "Basic 2"
-
-    if "basico" in text or "básico" in text or "iniciante" in text or "a1" in text:
-        return "Basic"
-
-    return "Basic"
 
 
 def get_placement_questions(level: str):
@@ -945,7 +909,7 @@ def build_next_lesson_preview(
                 },
             ],
         )
-        preview = response.choices[0].message.content.strip()
+        preview = get_openai_text(response)
     except Exception as error:
         print("Erro ao gerar previa da proxima aula:", error)
         if response_language == "English":
@@ -1361,23 +1325,33 @@ def build_quiz_correct_reply(quiz_id: str, student: StudentDB, db: Session):
 def generate_writing_practice_feedback(student: StudentDB, message: str, db: Session):
     language = normalize_language_preference(student.preferred_language)
     response_language = "English" if language == "English" else "Portuguese"
-    client = get_openai_client()
-    response = call_with_retry(client.chat.completions.create, operation="chat_completion",
-        model="gpt-4o-mini",
-        messages=[
-            {
-                "role": "system",
-                "content": (
-                    "You are WINGO correcting a short Past Simple writing exercise. "
-                    f"Reply in {response_language}. First show the corrected English sentence, "
-                    "then explain one important correction briefly, and ask for one new Past Simple "
-                    "sentence about yesterday. Do not change topics and do not use multiple choice."
-                ),
-            },
-            {"role": "user", "content": message},
-        ],
-    )
-    answer = response.choices[0].message.content.strip()
+    try:
+        client = get_openai_client()
+        response = call_with_retry(client.chat.completions.create, operation="chat_completion",
+            model="gpt-4o-mini",
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "You are WINGO correcting a short Past Simple writing exercise. "
+                        f"Reply in {response_language}. First show the corrected English sentence, "
+                        "then explain one important correction briefly, and ask for one new Past Simple "
+                        "sentence about yesterday. Do not change topics and do not use multiple choice."
+                    ),
+                },
+                {"role": "user", "content": message},
+            ],
+        )
+        answer = get_openai_text(response)
+    except Exception as error:
+        log_event(
+            "ai_fallback_answer_used",
+            feature="writing_practice",
+            student_id=student.id,
+            error=str(error),
+            error_type=type(error).__name__,
+        )
+        answer = build_writing_practice_fallback(response_language)
     save_guided_exchange(student, message, answer, db)
     return answer
 
@@ -1921,7 +1895,7 @@ Fluent
         ]
     )
 
-    return response.choices[0].message.content.strip()
+    return get_openai_text(response)
 
 
 def evaluate_placement_test_details(student: StudentDB):
@@ -1970,7 +1944,7 @@ If there are no clear English mistakes because the student wrote very little, ex
         ]
     )
 
-    content = response.choices[0].message.content.strip()
+    content = get_openai_text(response)
 
     try:
         data = json.loads(content)
@@ -2692,7 +2666,7 @@ Rules:
         ]
     )
 
-    audio_text = response.choices[0].message.content.strip()
+    audio_text = get_openai_text(response)
     audio_text = re.sub(r"^[\"'`]+|[\"'`]+$", "", audio_text).strip()
 
     if not audio_text:
@@ -3509,7 +3483,7 @@ new phrase, or recurring learning point. Do not save greetings or casual chat.
     )
 
     try:
-        data = json.loads(response.choices[0].message.content)
+        data = json.loads(get_openai_text(response))
     except (TypeError, json.JSONDecodeError):
         return None
 
@@ -3834,15 +3808,33 @@ Brand voice:
         }
     )
 
-    client = get_openai_client()
+    ai_answer_generated = True
 
-    response = call_with_retry(client.chat.completions.create, operation="chat_completion",
-        model="gpt-4o-mini",
-        messages=messages
-    )
+    try:
+        client = get_openai_client()
+        response = call_with_retry(client.chat.completions.create, operation="chat_completion",
+            model="gpt-4o-mini",
+            messages=messages
+        )
+        answer = get_openai_text(response)
+    except Exception as error:
+        ai_answer_generated = False
+        log_event(
+            "ai_fallback_answer_used",
+            feature="chat",
+            student_id=student.id,
+            error=str(error),
+            error_type=type(error).__name__,
+        )
+        answer = build_ai_unavailable_reply(
+            language=language,
+            level=level,
+            lesson_title=get_current_lesson(student).get("title", "the current lesson"),
+            is_basic_level=is_basic_level(level),
+        )
 
-    answer = response.choices[0].message.content
-    answer = ensure_teacher_audio_prompt(student, answer)
+    if ai_answer_generated:
+        answer = ensure_teacher_audio_prompt(student, answer)
 
     conversation = ConversationDB(
         student_id=student.id,
@@ -3946,6 +3938,7 @@ api_dependencies = {
         "get_lesson_design": get_lesson_design,
         "get_lesson_stage": get_lesson_stage,
         "get_openai_client": lambda: get_openai_client,
+        "get_openai_text": get_openai_text,
         "get_placement_questions": get_placement_questions,
         "get_quiz_interface_language": get_quiz_interface_language,
         "get_start_lesson_for_level": get_start_lesson_for_level,

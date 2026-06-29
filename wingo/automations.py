@@ -25,6 +25,7 @@ _DEPENDENCY_NAMES = (
     "get_lesson_context",
     "get_lesson_stage",
     "get_openai_client",
+    "get_openai_text",
     "get_recent_learning_summary",
     "get_seasonal_context",
     "get_student_lesson_schedule",
@@ -69,7 +70,7 @@ Rules:
         ]
     )
 
-    return response.choices[0].message.content.strip()
+    return get_openai_text(response)
 
 
 def generate_weekly_quiz(student: StudentDB, db: Session):
@@ -101,7 +102,7 @@ Rules:
         ]
     )
 
-    return response.choices[0].message.content.strip()
+    return get_openai_text(response)
 
 
 def build_weekly_progress_report(student: StudentDB, db: Session):
@@ -231,7 +232,7 @@ Rules:
         ]
     )
 
-    return response.choices[0].message.content.strip()
+    return get_openai_text(response)
 
 
 def send_daily_word_challenges(db: Session, now: datetime):
