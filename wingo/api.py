@@ -1065,6 +1065,8 @@ def handle_control_command(student: StudentDB, message: str, db: Session):
             active_session.summary = (
                 f"Aula encerrada: {format_lesson_title(get_current_lesson(student))}."
             )
+        if (student.current_lesson or 1) < 70:
+            student.current_lesson = (student.current_lesson or 1) + 1
         student.current_stage = 7
         student.lesson_stage = LESSON_COMPLETED_STAGE
         student.messages_in_current_lesson = 0

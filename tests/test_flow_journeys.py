@@ -917,6 +917,7 @@ class FlowJourneyTests(unittest.TestCase):
         self.assertIn("Nao vou continuar mandando exercicios", reply)
         self.assertEqual(student.lesson_stage, "completed")
         self.assertEqual(student.messages_in_current_lesson, 0)
+        self.assertEqual(student.current_lesson, 2)
         session = self.db.query(LessonSessionDB).filter_by(student_id=student.id).one()
         self.assertEqual(session.status, "completed")
 
@@ -947,6 +948,33 @@ class FlowJourneyTests(unittest.TestCase):
         self.assertNotIn("Em ingles:", reply)
         self.assertNotIn("Repeat after me", reply)
         self.assertEqual(student.lesson_stage, "completed")
+        self.assertEqual(student.current_lesson, 2)
+
+    def test_next_lesson_after_manual_finish_advances_past_greetings(self):
+        student = self.create_student(
+            stage=7,
+            assessment_completed="Yes",
+            schedule_completed="Yes",
+            current_lesson=1,
+            lesson_stage="short_explanation",
+            messages_in_current_lesson=2,
+        )
+        self.db.add(
+            LessonSessionDB(
+                student_id=student.id,
+                lesson_number=1,
+                lesson_title="Greetings",
+                status="started",
+            )
+        )
+        self.db.commit()
+
+        self.send(student, "Encerrar aula")
+        with patch.object(main, "get_openai_client", side_effect=RuntimeError("offline")):
+            reply = self.send(student, "Qual a proxima aula?")
+
+        self.assertIn("Countries & Nationalities", reply)
+        self.assertNotIn("Proxima aula: Greetings", reply)
 
     def test_possible_finish_phrase_asks_for_confirmation_buttons(self):
         student = self.create_student(
@@ -1004,6 +1032,7 @@ class FlowJourneyTests(unittest.TestCase):
         answer.assert_not_called()
         self.assertIn("Encerramos a aula", reply)
         self.assertEqual(student.lesson_stage, "completed")
+        self.assertEqual(student.current_lesson, 2)
 
     def test_hint_button_gives_short_guided_hint(self):
         student = self.create_student(
