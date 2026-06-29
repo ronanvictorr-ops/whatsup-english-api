@@ -1,6 +1,15 @@
 venv/
+.venv/
 __pycache__/
 *.pyc
 whatsup.db
 .env
 .wingo_intro_video_media_id
+
+site/node_modules/
+site/.env
+site/.env.*
+site/dist/
+site/.output/
+site/.nitro/
+site/.tanstack/

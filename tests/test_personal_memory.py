@@ -7,7 +7,7 @@ from sqlalchemy.orm import sessionmaker
 
 import main
 from database import Base
-from models import PersonalNoteDB, StudentDB
+from models import ConversationDB, PersonalNoteDB, StudentDB
 from wingo import personal_memory
 
 
@@ -113,6 +113,40 @@ class PersonalMemoryTests(unittest.TestCase):
         self.assertIn("Personal relationship memory:", system_prompt)
         self.assertIn("prova difícil", system_prompt)
         self.assertIn("Use personal relationship memory naturally", system_prompt)
+
+    def test_generate_ai_answer_uses_safe_fallback_when_openai_fails(self):
+        student = self.create_student()
+
+        with patch.object(
+            main, "get_openai_client", side_effect=RuntimeError("offline")
+        ), patch.object(
+            main, "save_learning_record_if_needed"
+        ), patch.object(
+            main, "save_personal_notes_if_needed"
+        ):
+            answer = main.generate_ai_answer(student, "Como digo agua?", self.db)
+
+        self.assertIn("correcao inteligente", answer)
+        self.assertIn("What do you like?", answer)
+        conversation = self.db.query(ConversationDB).filter_by(student_id=student.id).one()
+        self.assertEqual(conversation.question, "Como digo agua?")
+        self.assertEqual(conversation.answer, answer)
+
+    def test_writing_feedback_uses_safe_fallback_when_openai_fails(self):
+        student = self.create_student()
+
+        with patch.object(main, "get_openai_client", side_effect=RuntimeError("offline")):
+            answer = main.generate_writing_practice_feedback(
+                student,
+                "I go to work yesterday.",
+                self.db,
+            )
+
+        self.assertIn("Past Simple", answer)
+        self.assertIn("I studied English yesterday.", answer)
+        conversation = self.db.query(ConversationDB).filter_by(student_id=student.id).one()
+        self.assertEqual(conversation.question, "I go to work yesterday.")
+        self.assertEqual(conversation.answer, answer)
 
 
 if __name__ == "__main__":
