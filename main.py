@@ -363,7 +363,6 @@ def get_placement_questions(level: str):
         PLACEMENT_TEST_QUESTIONS_BY_LEVEL["Basic"]
     )
 
-
 def count_answer_words(message: str):
     return len(re.findall(r"[A-Za-zÀ-ÿ']+", message or ""))
 
@@ -561,6 +560,7 @@ def detect_language_switch_request(message: str):
         r"\bonly english\b",
         r"\bspeak (?:only )?english\b",
         r"\bcontinue in english\b",
+        r"\bin english\b",
         r"\blesson in english\b",
         r"\b(?:mudar|trocar|alterar).*(?:idioma|lingua).*(?:english|ingles)\b",
         r"\b(?:mudar|trocar|alterar).*para.*(?:english|ingles)\b",
@@ -575,6 +575,7 @@ def detect_language_switch_request(message: str):
         r"\bonly portuguese\b",
         r"\bspeak (?:only )?portuguese\b",
         r"\bcontinue in portuguese\b",
+        r"\bin portuguese\b",
         r"\b(?:mudar|trocar|alterar).*(?:idioma|lingua).*(?:portuguese|portugues)\b",
         r"\b(?:mudar|trocar|alterar).*para.*(?:portuguese|portugues)\b",
         r"\bem portugues\b",
@@ -638,6 +639,7 @@ def detect_control_command(message: str):
         ("weekly_report", [r"\brelatorio semanal\b", r"\brelatorio da semana\b", r"\bresumo da semana\b"]),
         ("review", [r"\brevisar aula\b", r"\brevisao\b", r"\brevisão\b", r"\brevisar\b"]),
         ("pause", [r"\bpausar aulas\b", r"\bpausar\b", r"\bdar um tempo\b"]),
+        ("finish_lesson", [r"\bencerrar aula\b", r"\bfinalizar aula\b", r"\bterminar aula\b", r"\bparar aula\b", r"\bchega de aula\b"]),
         ("resume", [r"\bretomar aulas\b", r"\bvoltar aulas\b", r"\bcontinuar aulas\b", r"\bvamos continuar\b"]),
         ("support", [r"\bsuporte\b", r"\bfalar com suporte\b", r"\bhumano\b", r"\bprofessor humano\b"]),
         ("help", [r"\bajuda\b", r"\bcomandos\b", r"\bo que posso fazer\b"]),
@@ -3293,7 +3295,12 @@ def build_lesson_opening_replies(student: StudentDB, db: Session):
         replies.append(lesson_video)
 
     if lesson["title"] == "Greetings":
-        replies.append("Hoje vamos aprender cumprimentos. Como voce diria 'Ola' em ingles?")
+        replies.append(
+            "Hoje vamos aprender cumprimentos.\n\n"
+            "Repeat after me:\n"
+            "Hello.\n\n"
+            "Agora tente responder em texto ou audio curto: como voce diria 'Ola' em ingles?"
+        )
     else:
         replies.append(generate_weekly_lesson(student, db))
 

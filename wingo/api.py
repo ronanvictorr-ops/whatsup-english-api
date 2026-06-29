@@ -1048,6 +1048,34 @@ def handle_control_command(student: StudentDB, message: str, db: Session):
             "Quando quiser voltar, me mande: vamos continuar."
         )
 
+    if command == "finish_lesson":
+        active_session = (
+            db.query(LessonSessionDB)
+            .filter(
+                LessonSessionDB.student_id == student.id,
+                LessonSessionDB.status == "started",
+            )
+            .order_by(LessonSessionDB.id.desc())
+            .first()
+        )
+        if active_session:
+            active_session.status = "completed"
+            active_session.completed_at = datetime.utcnow()
+            active_session.messages_count = student.messages_in_current_lesson or 0
+            active_session.summary = (
+                f"Aula encerrada: {format_lesson_title(get_current_lesson(student))}."
+            )
+        student.current_stage = 7
+        student.lesson_stage = LESSON_COMPLETED_STAGE
+        student.messages_in_current_lesson = 0
+        student.last_activity = datetime.utcnow()
+        db.commit()
+        return (
+            "Combinado. Encerramos a aula por aqui.\n\n"
+            "Nao vou continuar mandando exercicios desta aula agora. Quando quiser voltar, "
+            "me mande: revisar aula, praticar conversa ou proxima aula."
+        )
+
     if command == "resume":
         if (
             getattr(student, "schedule_completed", "No") == "Paused"
@@ -1162,6 +1190,7 @@ def normalize_plain_button_text(student: StudentDB, message: str):
 def build_lesson_hint_reply(student: StudentDB, message: str, db: Session):
     lesson = get_current_lesson(student)
     stage = get_lesson_stage(student)
+    example_name = student_example_name(student)
 
     if lesson["title"] == "Greetings":
         hints = {
@@ -1171,7 +1200,7 @@ def build_lesson_hint_reply(student: StudentDB, message: str, db: Session):
             ),
             "short_explanation": (
                 "Dica curta: comece com My name is e depois coloque o nome.\n\n"
-                "Exemplo: My name is Ana.\n\n"
+                f"Exemplo: My name is {example_name}.\n\n"
                 "Agora tente escrever a frase completa."
             ),
             "more_examples": (
@@ -1181,7 +1210,7 @@ def build_lesson_hint_reply(student: StudentDB, message: str, db: Session):
             ),
             "comprehension": (
                 "Dica curta: responda com My name is + seu nome.\n\n"
-                "Exemplo: My name is Ana.\n\n"
+                f"Exemplo: My name is {example_name}.\n\n"
                 "Agora responda usando seu nome real."
             ),
         }
@@ -1222,6 +1251,8 @@ def build_lesson_hint_reply(student: StudentDB, message: str, db: Session):
 def extract_phrase_practice_text(message: str):
     text = (message or "").strip()
     patterns = [
+        r"(?i)(?:eu\s+)?(?:gostaria|quero)\s+de\s+(?:aprender\s+)?como\s+(?:perguntar|falar|dizer)\s+(.+?)\s+em\s+ingl[eê]s\??$",
+        r"(?i)como\s+(?:eu\s+)?(?:pergunto|perguntar)\s+(.+?)\s+em\s+ingl[eê]s\??$",
         r"(?i)como\s+(?:eu\s+)?(?:falo|digo|dizer)\s*,?\s*(.+?)\s+em\s+ingl[eê]s\??$",
         r"(?i)como\s+(?:eu\s+)?(?:pe[cç]o|pedir)\s+(.+?)\s+em\s+ingl[eê]s\??$",
         r"(?i)me\s+ajude\s+a\s+(?:pedir|falar|dizer)\s+(.+?)\s+em\s+ingl[eê]s\??$",
@@ -1237,7 +1268,78 @@ def extract_phrase_practice_text(message: str):
     return None
 
 
+def build_phrase_practice_reply(student: StudentDB, message: str, db: Session):
+    phrase = extract_phrase_practice_text(message)
+    if not phrase:
+        return None
+
+    normalized = normalize_intent_text(phrase)
+    phrase_map = {
+        "as horas": ("What time is it?", "perguntar as horas"),
+        "horas": ("What time is it?", "perguntar as horas"),
+        "que horas sao": ("What time is it?", "perguntar as horas"),
+        "que horas sao?": ("What time is it?", "perguntar as horas"),
+        "a hora": ("What time is it?", "perguntar as horas"),
+        "agua": ("Can I have some water?", "pedir agua"),
+        "água": ("Can I have some water?", "pedir agua"),
+        "eu quero agua": ("I want water.", "dizer que voce quer agua"),
+        "eu quero água": ("I want water.", "dizer que voce quer agua"),
+        "quero agua": ("I want water.", "dizer que voce quer agua"),
+        "quero água": ("I want water.", "dizer que voce quer agua"),
+    }
+    english, intent = phrase_map.get(normalized, (None, None))
+    if not english:
+        return None
+
+    reply = (
+        f"Claro. Para {intent} em ingles, diga:\n\n"
+        f"{english}\n\n"
+        "Repeat after me:\n"
+        f"{english}\n\n"
+        "Agora tente escrever a frase em ingles. Se puder, tambem pode mandar um audio curto repetindo."
+    )
+    db.add(
+        ConversationDB(
+            student_id=student.id,
+            question=message,
+            answer=reply,
+        )
+    )
+    db.commit()
+    return reply
+
+
+def format_placement_question_for_language(level: str, question_index: int, language: str):
+    questions = get_placement_questions(level)
+    question = questions[question_index]
+    if normalize_language_preference(language) != "English":
+        return question
+
+    english_basic_questions = {
+        ("Basic", 0): "Question 1 of 5: write one English sentence you know. If you do not know one, write: I don't know.",
+        ("Basic", 1): "Question 2 of 5: how would you say 'Meu nome e ...' in English?",
+        ("Basic", 2): "Question 3 of 5: answer in English: Where are you from?",
+        ("Basic", 3): "Question 4 of 5: write one simple sentence about yourself. It can be very short.",
+        ("Basic", 4): "Question 5 of 5: say one thing you like in English. If you do not know, you can answer in Portuguese.",
+        ("Basic 2", 0): "Question 1 of 5: write one sentence introducing yourself in English.",
+        ("Basic 2", 1): "Question 2 of 5: answer in English: What do you do every day?",
+        ("Basic 2", 2): "Question 3 of 5: write 3 things you like in English.",
+        ("Basic 2", 3): "Question 4 of 5: how would you order food in a restaurant?",
+        ("Basic 2", 4): "Question 5 of 5: write one sentence about today's weather.",
+        ("Intermediate", 0): "Question 1 of 5: introduce yourself in 2 short sentences.",
+        ("Intermediate", 1): "Question 2 of 5: What did you do yesterday?",
+        ("Intermediate", 2): "Question 3 of 5: What are you doing this week?",
+        ("Intermediate", 3): "Question 4 of 5: Tell me about a travel experience or a place you want to visit.",
+        ("Intermediate", 4): "Question 5 of 5: Write one question you would ask at a hotel or airport.",
+    }
+    return english_basic_questions.get((level, question_index), question)
+
+
 def build_after_lesson_bot_reply(student: StudentDB, message: str, db: Session):
+    phrase_reply = build_phrase_practice_reply(student, message, db)
+    if phrase_reply:
+        return phrase_reply
+
     ai_question = (
         "[Internal instruction: the guided lesson is finished. "
         "Answer the student's current question in flexible tutor/BOT mode. "
@@ -1548,10 +1650,11 @@ def build_topic_practice_reply(student: StudentDB, topic: str, message: str, db:
     db.commit()
 
     if normalize_intent_text(topic) == "pronunciation":
+        example_name = student_example_name(student)
         return (
             "Perfeito, vamos treinar pronuncia.\n\n"
             "Comece com uma frase curta:\n\n"
-            "Hello, my name is Ana.\n\n"
+            f"Hello, my name is {example_name}.\n\n"
             "Missao rapida: me mande essa frase em audio. Eu vou avaliar clareza, ritmo e pronuncia."
         )
 
@@ -1653,6 +1756,45 @@ def build_audio_replay(student: StudentDB, db: Session):
     return "Claro. Qual frase em ingles voce quer que eu repita em audio?"
 
 
+def is_audio_practice_request(message: str):
+    text = normalize_intent_text(message)
+    return any(
+        phrase in text
+        for phrase in {
+            "praticar audio",
+            "praticar pronuncia",
+            "treinar audio",
+            "treinar pronuncia",
+            "vamos praticar audio",
+            "vamos praticar pronuncia",
+            "quero audio",
+            "quero praticar audio",
+            "quero praticar pronuncia",
+        }
+    )
+
+
+def build_audio_practice_reply(student: StudentDB, message: str, db: Session):
+    lesson = get_current_lesson(student)
+    example_name = student_example_name(student)
+    phrase = f"My name is {example_name}." if lesson["title"] == "Greetings" else "I practice English every day."
+    reply = (
+        "Otimo. Vamos praticar audio agora.\n\n"
+        "Repeat after me:\n"
+        f"{phrase}\n\n"
+        "Depois me mande um audio curto repetindo a frase."
+    )
+    db.add(
+        ConversationDB(
+            student_id=student.id,
+            question=message,
+            answer=reply,
+        )
+    )
+    db.commit()
+    return reply
+
+
 def is_short_time_request(message: str):
     text = normalize_intent_text(message)
     return any(
@@ -1709,8 +1851,16 @@ def build_stuck_lesson_recovery(student: StudentDB, db: Session):
     stage = get_lesson_stage(student)
 
     if lesson["title"] == "Greetings":
-        example = "Exemplo: Hello."
-        reformulated = "Vamos bem simples: como voce diria 'Ola' em ingles?"
+        example_name = student_example_name(student)
+        if stage == "short_explanation":
+            example = f"Exemplo: My name is {example_name}."
+            reformulated = f"Vamos simples: como voce diria 'Meu nome e {example_name}' em ingles?"
+        elif stage in {"more_examples", "comprehension", "structure"}:
+            example = "Exemplo: What's your name?"
+            reformulated = "Vamos simples: como voce pergunta 'Qual e o seu nome?' em ingles?"
+        else:
+            example = "Exemplo: Hello."
+            reformulated = "Vamos bem simples: como voce diria 'Ola' em ingles?"
     elif lesson["title"] == "Past Simple":
         example = "Exemplo: Yesterday I studied."
         reformulated = "Agora tente uma frase curta sobre ontem com 'Yesterday I...'"
@@ -1735,6 +1885,11 @@ def build_stuck_lesson_recovery(student: StudentDB, db: Session):
     }
 
 
+def student_example_name(student: StudentDB):
+    name = (getattr(student, "name", None) or "").strip().split()
+    return name[0] if name else "Ronan"
+
+
 def build_greetings_context_reply(
     student: StudentDB,
     message: str,
@@ -1745,6 +1900,7 @@ def build_greetings_context_reply(
         return None
 
     normalized = normalize_intent_text(message)
+    example_name = student_example_name(student)
 
     def save_and_return(answer: str):
         db.add(
@@ -1764,7 +1920,7 @@ def build_greetings_context_reply(
         return save_and_return(
             f"Muito bem! \"{message.strip()}\" esta correto.\n\n"
             "Hi e mais casual. Hello tambem esta certo e funciona bem para cumprimentar alguem.\n\n"
-            "Agora vamos dar mais um passo: como voce diria em ingles \"Meu nome e Ana\"?"
+            f"Agora vamos dar mais um passo: como voce diria em ingles \"Meu nome e {example_name}\"?"
         )
 
     if answered_stage == "short_explanation":
@@ -1836,7 +1992,7 @@ def build_greetings_context_reply(
         return save_and_return(
             "Quase. Vamos manter bem simples.\n\n"
             "Para perguntar o nome: What's your name?\n"
-            "Para responder: My name is Ana.\n\n"
+            f"Para responder: My name is {example_name}.\n\n"
             "Agora tente responder: What's your name?"
         )
 
@@ -1861,6 +2017,7 @@ def build_greetings_resume_reply(student: StudentDB, db: Session):
 
     student.current_stage = 7
     stage = get_lesson_stage(student)
+    example_name = student_example_name(student)
 
     if stage == "context_question":
         db.commit()
@@ -1870,7 +2027,7 @@ def build_greetings_resume_reply(student: StudentDB, db: Session):
         "short_explanation": (
             "Vamos retomar do ponto certo.\n\n"
             "Voce ja praticou o cumprimento. Agora me responda:\n\n"
-            "Como voce diria em ingles \"Meu nome e Ana\"?"
+            f"Como voce diria em ingles \"Meu nome e {example_name}\"?"
         ),
         "more_examples": (
             "Vamos retomar do ponto certo.\n\n"
@@ -1884,7 +2041,7 @@ def build_greetings_resume_reply(student: StudentDB, db: Session):
         "structure": (
             "Vamos retomar do ponto certo.\n\n"
             "Para perguntar o nome: What's your name?\n"
-            "Para responder: My name is Ana.\n\n"
+            f"Para responder: My name is {example_name}.\n\n"
             "Agora tente responder: What's your name?"
         ),
     }
@@ -2027,6 +2184,10 @@ def process_whatsapp_message(phone: str, message: str, db: Session):
         command_reply = handle_control_command(student, message, db)
         if command_reply:
             return command_reply
+
+        phrase_reply = build_phrase_practice_reply(student, message, db)
+        if phrase_reply:
+            return phrase_reply
 
         requested_language = None
         if not extract_phrase_practice_text(message):
@@ -2316,6 +2477,20 @@ def process_whatsapp_message(phone: str, message: str, db: Session):
         question_index = student.current_stage - 50
         questions = get_placement_questions(student.level)
         answer_message = message
+        requested_language = detect_language_switch_request(answer_message)
+
+        if requested_language:
+            student.preferred_language = requested_language
+            db.commit()
+            if requested_language == "English":
+                return (
+                    "Sure. Let's keep the level test here.\n\n"
+                    f"{format_placement_question_for_language(student.level, question_index, 'English')}"
+                )
+            return (
+                "Combinado. Vamos continuar o teste em portugues.\n\n"
+                f"{questions[question_index]}"
+            )
 
         if is_off_topic_during_assessment(answer_message):
             if wants_portuguese_mode(answer_message):
@@ -2489,6 +2664,9 @@ def process_whatsapp_message(phone: str, message: str, db: Session):
                     "Pode ser: pronuncia, viagem, trabalho, futuro ou entrevista."
                 )
             return build_topic_practice_reply(student, requested_topic, message, db)
+
+        if is_audio_practice_request(message):
+            return build_audio_practice_reply(student, message, db)
 
         if is_audio_replay_request(message):
             return build_audio_replay(student, db)
