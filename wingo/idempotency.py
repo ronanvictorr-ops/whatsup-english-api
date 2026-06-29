@@ -1,6 +1,6 @@
 from datetime import datetime, timedelta
 
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
 from models import OutboundDeliveryDB, ProcessedWebhookMessageDB
 from wingo.observability import log_event
@@ -72,9 +72,20 @@ def send_reply_once(
     sender,
     reply_text,
 ):
-    delivery = db.query(OutboundDeliveryDB).filter(
-        OutboundDeliveryDB.idempotency_key == idempotency_key
-    ).first()
+    try:
+        delivery = db.query(OutboundDeliveryDB).filter(
+            OutboundDeliveryDB.idempotency_key == idempotency_key
+        ).first()
+    except SQLAlchemyError as error:
+        db.rollback()
+        log_event(
+            "outbound_delivery_query_recovered",
+            idempotency_key=idempotency_key,
+            error_type=type(error).__name__,
+        )
+        delivery = db.query(OutboundDeliveryDB).filter(
+            OutboundDeliveryDB.idempotency_key == idempotency_key
+        ).first()
 
     if delivery and delivery.status == "sent":
         log_event("outbound_duplicate_skipped", idempotency_key=idempotency_key)
