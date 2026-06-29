@@ -2,7 +2,7 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
 
 import main
@@ -113,6 +113,16 @@ class PersonalMemoryTests(unittest.TestCase):
         self.assertIn("Personal relationship memory:", system_prompt)
         self.assertIn("prova difícil", system_prompt)
         self.assertIn("Use personal relationship memory naturally", system_prompt)
+
+    def test_relationship_memory_summary_ignores_missing_table(self):
+        student = self.create_student()
+        self.db.execute(text("DROP TABLE personal_notes"))
+        self.db.commit()
+
+        summary = personal_memory.get_recent_personal_notes_summary(student.id, self.db)
+
+        self.assertEqual(summary, "No personal relationship memory saved yet.")
+        self.assertEqual(self.db.query(StudentDB).count(), 1)
 
     def test_generate_ai_answer_uses_safe_fallback_when_openai_fails(self):
         student = self.create_student()

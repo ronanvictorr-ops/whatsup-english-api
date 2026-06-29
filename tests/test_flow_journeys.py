@@ -2,7 +2,7 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
 
 import main
@@ -520,6 +520,25 @@ class FlowJourneyTests(unittest.TestCase):
         self.assertIn("Bahia", prompt["body"])
         self.assertEqual(prompt["buttons"][0]["id"], "return:personal")
 
+    def test_smart_return_prompt_ignores_missing_personal_notes_table(self):
+        student = self.create_student(
+            stage=7,
+            assessment_completed="Yes",
+            schedule_completed="Yes",
+            lesson_stage="completed",
+        )
+        self.db.execute(text("DROP TABLE personal_notes"))
+        self.db.commit()
+
+        prompt = main.build_smart_return_prompt(student, self.db)
+
+        self.assertEqual(prompt["type"], "buttons")
+        self.assertIn("Que bom que voce voltou", prompt["body"])
+        self.assertEqual(
+            [button["id"] for button in prompt["buttons"]],
+            ["return:practice", "return:continue", "return:topic"],
+        )
+
     def test_post_lesson_practice_button_starts_tiny_conversation(self):
         student = self.create_student(
             stage=7,
@@ -592,6 +611,89 @@ class FlowJourneyTests(unittest.TestCase):
             self.assertNotIn("Tive um problema", reply)
             self.assertIn("Vamos revisar", reply)
             self.assertIn("Greetings", reply)
+
+    def test_topic_buttons_are_local_and_do_not_call_ai(self):
+        button_student = self.create_student(
+            stage=7,
+            assessment_completed="Yes",
+            schedule_completed="Yes",
+            lesson_stage="completed",
+        )
+        plain_student = self.create_student(
+            stage=7,
+            phone="5511977777777",
+            email="plain-topic@whatsapp.local",
+            assessment_completed="Yes",
+            schedule_completed="Yes",
+            lesson_stage="completed",
+        )
+
+        with patch.object(main, "generate_ai_answer") as answer:
+            button_reply = self.send(button_student, "__button__:return:topic::Mudar tema")
+            plain_reply = self.send(plain_student, "Mudar tema")
+
+        answer.assert_not_called()
+        for reply in (button_reply, plain_reply):
+            self.assertNotIn("Tive uma instabilidade", reply)
+            self.assertNotIn("Tive um problema", reply)
+            self.assertIn("Qual tema", reply)
+
+    def test_topic_choices_after_buttons_have_safe_fallback_when_ai_fails(self):
+        openers = [
+            "__button__:return:topic::Mudar tema",
+            "Mudar tema",
+            "__button__:practice:choose_topic:pt::Escolher tema",
+        ]
+
+        for index, opener in enumerate(openers):
+            with self.subTest(opener=opener):
+                student = self.create_student(
+                    stage=7,
+                    phone=f"55119666666{index}",
+                    email=f"topic-fallback-{index}@whatsapp.local",
+                    level="Basic",
+                    assessment_completed="Yes",
+                    schedule_completed="Yes",
+                    lesson_stage="completed",
+                )
+
+                prompt = self.send(student, opener)
+                self.assertIn("Qual tema", prompt)
+
+                with patch.object(main, "get_openai_client", side_effect=RuntimeError("offline")):
+                    reply = self.send(student, "viagem")
+
+                self.assertNotIn("instabilidade", reply.lower())
+                self.assertNotIn("correcao inteligente", reply.lower())
+                self.assertIn("Travel English", reply)
+                self.assertIn("I need help at the airport.", reply)
+
+    def test_next_preview_buttons_have_safe_fallback_when_ai_fails(self):
+        button_student = self.create_student(
+            stage=7,
+            phone="5511955555555",
+            email="next-button@whatsapp.local",
+            assessment_completed="Yes",
+            schedule_completed="Yes",
+            lesson_stage="completed",
+        )
+        plain_student = self.create_student(
+            stage=7,
+            phone="5511944444444",
+            email="next-plain@whatsapp.local",
+            assessment_completed="Yes",
+            schedule_completed="Yes",
+            lesson_stage="completed",
+        )
+
+        with patch.object(main, "get_openai_client", side_effect=RuntimeError("offline")):
+            button_reply = self.send(button_student, "__button__:post_lesson:next_preview::Ver proxima")
+            plain_reply = self.send(plain_student, "Ver proxima")
+
+        for reply in (button_reply, plain_reply):
+            self.assertNotIn("instabilidade", reply.lower())
+            self.assertNotIn("correcao inteligente", reply.lower())
+            self.assertIn("Proxima aula", reply)
 
     def test_short_time_request_switches_to_two_minute_micro_lesson(self):
         student = self.create_student(
