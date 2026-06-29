@@ -639,7 +639,7 @@ def detect_control_command(message: str):
         ("weekly_report", [r"\brelatorio semanal\b", r"\brelatorio da semana\b", r"\bresumo da semana\b"]),
         ("review", [r"\brevisar aula\b", r"\brevisao\b", r"\brevisão\b", r"\brevisar\b"]),
         ("pause", [r"\bpausar aulas\b", r"\bpausar\b", r"\bdar um tempo\b"]),
-        ("finish_lesson", [r"\bencerrar aula\b", r"\bfinalizar aula\b", r"\bterminar aula\b", r"\bparar aula\b", r"\bchega de aula\b"]),
+        ("finish_lesson", [r"\b(?:encerrar|finalizar|terminar|parar) aula\b", r"\bchega de aula\b", r"\b(?:finalizei|finalize|finaliza|finalizar|finalizando).*\baula\b", r"\baula.*\b(?:finalizada|finalizei|finalize|finaliza|finalizar)\b", r"\b(?:finish|end|stop).*(?:lesson|class)\b", r"\b(?:lesson|class).*(?:finish|finished|end|stop)\b"]),
         ("resume", [r"\bretomar aulas\b", r"\bvoltar aulas\b", r"\bcontinuar aulas\b", r"\bvamos continuar\b"]),
         ("support", [r"\bsuporte\b", r"\bfalar com suporte\b", r"\bhumano\b", r"\bprofessor humano\b"]),
         ("help", [r"\bajuda\b", r"\bcomandos\b", r"\bo que posso fazer\b"]),

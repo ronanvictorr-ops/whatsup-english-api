@@ -920,6 +920,34 @@ class FlowJourneyTests(unittest.TestCase):
         session = self.db.query(LessonSessionDB).filter_by(student_id=student.id).one()
         self.assertEqual(session.status, "completed")
 
+    def test_finish_lesson_command_handles_mixed_typo_phrase(self):
+        student = self.create_student(
+            stage=7,
+            assessment_completed="Yes",
+            schedule_completed="Yes",
+            current_lesson=1,
+            lesson_stage="structure",
+            messages_in_current_lesson=3,
+        )
+        self.db.add(
+            LessonSessionDB(
+                student_id=student.id,
+                lesson_number=1,
+                lesson_title="Greetings",
+                status="started",
+            )
+        )
+        self.db.commit()
+
+        with patch.object(main, "generate_ai_answer") as answer:
+            reply = self.send(student, "Vamos finalizei a aula")
+
+        answer.assert_not_called()
+        self.assertIn("Encerramos a aula", reply)
+        self.assertNotIn("Em ingles:", reply)
+        self.assertNotIn("Repeat after me", reply)
+        self.assertEqual(student.lesson_stage, "completed")
+
     def test_hint_button_gives_short_guided_hint(self):
         student = self.create_student(
             stage=7,
