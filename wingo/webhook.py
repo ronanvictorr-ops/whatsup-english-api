@@ -81,6 +81,17 @@ def is_plain_greeting(message: str) -> bool:
     }
 
 
+def should_prepend_return_prompt(message: str) -> bool:
+    if is_plain_greeting(message):
+        return False
+    if (message or "").startswith("__button__:"):
+        return False
+    try:
+        return _resolve("detect_control_command")(message) is None
+    except Exception:
+        return True
+
+
 def is_returning_after_break(student: StudentDB, now: datetime | None = None) -> bool:
     last_activity = getattr(student, "last_activity", None)
     if not last_activity:
@@ -300,7 +311,7 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
             db=db,
         )
         replies = reply if isinstance(reply, list) else [reply]
-        if returning_after_break and not is_plain_greeting(message):
+        if returning_after_break and should_prepend_return_prompt(message):
             replies = [
                 build_return_choice_buttons(student, db),
                 *replies,

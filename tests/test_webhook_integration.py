@@ -148,7 +148,7 @@ class WebhookIntegrationTests(unittest.TestCase):
         with patch.object(main, "process_whatsapp_message", side_effect=self.process), patch.object(
             main, "send_whatsapp_reply", side_effect=self.sender
         ), patch.object(main, "send_whatsapp_typing_indicator"), patch.object(webhook, "sleep"):
-            self.receive(text_payload(message_id="wamid.returning", text="vamos continuar"))
+            self.receive(text_payload(message_id="wamid.returning", text="quero estudar hoje"))
 
         self.assertEqual(len(self.sent), 2)
         self.assertEqual(self.sent[0][1]["type"], "buttons")
@@ -171,6 +171,19 @@ class WebhookIntegrationTests(unittest.TestCase):
 
         self.assertEqual(len(self.sent), 1)
         self.assertEqual(self.sent[0][1], "first reply")
+
+    def test_control_command_after_break_does_not_send_return_prompt(self):
+        student = self.db.query(StudentDB).one()
+        student.last_activity = datetime.utcnow() - timedelta(minutes=31)
+        self.db.commit()
+
+        with patch.object(main, "process_whatsapp_message", return_value="aula encerrada"), patch.object(
+            main, "send_whatsapp_reply", side_effect=self.sender
+        ):
+            self.receive(text_payload(message_id="wamid.finish", text="Encerrar aula"))
+
+        self.assertEqual(len(self.sent), 1)
+        self.assertEqual(self.sent[0][1], "aula encerrada")
 
     def test_return_prompt_failure_rolls_back_before_fallback_buttons(self):
         student = self.db.query(StudentDB).one()

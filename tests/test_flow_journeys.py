@@ -116,6 +116,23 @@ class FlowJourneyTests(unittest.TestCase):
         self.assertEqual(len(final_reply), 2)
         self.assertIn("placement_answer_5", student.onboarding_notes)
 
+    def test_language_request_during_assessment_repeats_current_question(self):
+        student = self.create_student(
+            stage=50,
+            assessment_completed="No",
+            schedule_completed="No",
+            level="Basic",
+        )
+
+        reply = self.send(student, "In English")
+
+        self.assertEqual(student.current_stage, 50)
+        self.assertEqual(student.assessment_completed, "No")
+        self.assertEqual(student.preferred_language, "English")
+        self.assertIn("Question 1 of 5", reply)
+        self.assertNotIn("Parei o teste", reply)
+        self.assertNotIn("Qual horario", reply)
+
     def test_lesson_start_creates_session_and_keeps_guided_state(self):
         student = self.create_student(
             stage=7,
@@ -351,11 +368,12 @@ class FlowJourneyTests(unittest.TestCase):
             lesson_stage="completed",
         )
 
-        with patch.object(main, "generate_ai_answer", return_value="Voce pode dizer: I want water.") as answer:
+        with patch.object(main, "generate_ai_answer") as answer:
             reply = self.send(student, "Como falo, eu quero agua em ingles?")
 
-        self.assertEqual(reply, "Voce pode dizer: I want water.")
-        self.assertIn("flexible tutor/BOT mode", answer.call_args.kwargs["ai_question"])
+        answer.assert_not_called()
+        self.assertIn("I want water.", reply)
+        self.assertIn("Repeat after me", reply)
         self.assertNotIn("Nos niveis basicos", reply)
         self.assertEqual(student.lesson_stage, "completed")
 
@@ -383,11 +401,12 @@ class FlowJourneyTests(unittest.TestCase):
             lesson_stage="completed",
         )
 
-        with patch.object(main, "generate_ai_answer", return_value="Diga: Can I have some water?") as answer:
+        with patch.object(main, "generate_ai_answer") as answer:
             reply = self.send(student, "Me ajude a pedir agua em ingles")
 
-        self.assertEqual(reply, "Diga: Can I have some water?")
-        self.assertIn("flexible tutor/BOT mode", answer.call_args.kwargs["ai_question"])
+        answer.assert_not_called()
+        self.assertIn("Can I have some water?", reply)
+        self.assertIn("Repeat after me", reply)
         self.assertNotIn("Nos niveis basicos", reply)
 
     def test_after_lesson_request_to_ask_for_water_has_safe_fallback(self):
@@ -783,7 +802,7 @@ class FlowJourneyTests(unittest.TestCase):
 
         with patch.object(main, "generate_ai_answer") as answer:
             hello_reply = self.send(student, "Hello")
-            name_reply = self.send(student, "My name is Ana")
+            name_reply = self.send(student, "My name is Journey")
             question_reply = self.send(student, "What's your name?")
             final_reply = self.send(student, "My name is Ronan")
 
@@ -791,6 +810,8 @@ class FlowJourneyTests(unittest.TestCase):
         all_replies = "\n".join([hello_reply, name_reply, question_reply, final_reply])
         self.assertNotIn("Tive um problema", all_replies)
         self.assertIn("Hi e mais casual", hello_reply)
+        self.assertIn("Meu nome e Journey", hello_reply)
+        self.assertNotIn("Meu nome e Ana", hello_reply)
         self.assertIn("funciona para se apresentar", name_reply)
         self.assertIn("What's your name", question_reply)
         self.assertIn("Hoje voce praticou", final_reply)
@@ -829,8 +850,75 @@ class FlowJourneyTests(unittest.TestCase):
 
         answer.assert_not_called()
         self.assertNotIn("Tive um problema", reply)
-        self.assertIn("Meu nome e Ana", reply)
+        self.assertIn("Meu nome e Journey", reply)
+        self.assertNotIn("Meu nome e Ana", reply)
         self.assertEqual(student.lesson_stage, "short_explanation")
+
+    def test_phrase_request_with_em_ingles_is_taught_not_language_switch(self):
+        student = self.create_student(
+            stage=7,
+            level="Basic",
+            assessment_completed="Yes",
+            schedule_completed="Yes",
+            current_lesson=1,
+            lesson_stage="context_question",
+        )
+
+        with patch.object(main, "generate_ai_answer") as answer:
+            reply = self.send(student, "Eu gostaria de aprender como perguntar as horas em ingles")
+
+        answer.assert_not_called()
+        self.assertEqual(student.preferred_language, "Portuguese")
+        self.assertIn("What time is it?", reply)
+        self.assertIn("Repeat after me", reply)
+        self.assertNotIn("vou explicar e orientar sempre em portugues", main.normalize_intent_text(reply))
+
+    def test_audio_practice_request_uses_current_student_name(self):
+        student = self.create_student(
+            stage=7,
+            assessment_completed="Yes",
+            schedule_completed="Yes",
+            current_lesson=1,
+            lesson_stage="completed",
+        )
+
+        with patch.object(main, "generate_ai_answer") as answer:
+            reply = self.send(student, "Vamos praticar audio")
+
+        answer.assert_not_called()
+        self.assertIn("Repeat after me:", reply)
+        self.assertIn("My name is Journey.", reply)
+        self.assertNotIn("Ana", reply)
+
+    def test_finish_lesson_command_stops_current_guided_lesson(self):
+        student = self.create_student(
+            stage=7,
+            assessment_completed="Yes",
+            schedule_completed="Yes",
+            current_lesson=1,
+            lesson_stage="short_explanation",
+            messages_in_current_lesson=2,
+        )
+        self.db.add(
+            LessonSessionDB(
+                student_id=student.id,
+                lesson_number=1,
+                lesson_title="Greetings",
+                status="started",
+            )
+        )
+        self.db.commit()
+
+        with patch.object(main, "generate_ai_answer") as answer:
+            reply = self.send(student, "Encerrar aula")
+
+        answer.assert_not_called()
+        self.assertIn("Encerramos a aula", reply)
+        self.assertIn("Nao vou continuar mandando exercicios", reply)
+        self.assertEqual(student.lesson_stage, "completed")
+        self.assertEqual(student.messages_in_current_lesson, 0)
+        session = self.db.query(LessonSessionDB).filter_by(student_id=student.id).one()
+        self.assertEqual(session.status, "completed")
 
     def test_hint_button_gives_short_guided_hint(self):
         student = self.create_student(
@@ -846,6 +934,38 @@ class FlowJourneyTests(unittest.TestCase):
         answer.assert_not_called()
         self.assertIn("Dica curta", reply)
         self.assertIn("Hello", reply)
+
+    def test_greetings_opening_includes_teacher_audio_prompt(self):
+        student = self.create_student(
+            stage=7,
+            assessment_completed="Yes",
+            schedule_completed="Yes",
+            current_lesson=1,
+            lesson_stage="context_question",
+        )
+
+        replies = main.build_lesson_opening_replies(student, self.db)
+
+        text = "\n".join(str(reply) for reply in replies)
+        self.assertIn("Repeat after me:", text)
+        self.assertIn("Hello.", text)
+
+    def test_stuck_on_name_question_reformulates_current_step(self):
+        student = self.create_student(
+            stage=7,
+            assessment_completed="Yes",
+            schedule_completed="Yes",
+            current_lesson=1,
+            lesson_stage="short_explanation",
+        )
+
+        with patch.object(main, "generate_ai_answer") as answer:
+            reply = self.send(student, "Nao sei")
+
+        answer.assert_not_called()
+        self.assertIn("Meu nome e Journey", reply["body"])
+        self.assertIn("My name is Journey", reply["body"])
+        self.assertNotIn("'Ola'", reply["body"])
 
     def test_plain_continue_after_lesson_completed_today_does_not_loop(self):
         student = self.create_student(
