@@ -1120,9 +1120,34 @@ def handle_control_command(student: StudentDB, message: str, db: Session):
     return None
 
 
+def build_lesson_finish_confirmation(student: StudentDB, message: str, db: Session):
+    lesson = get_current_lesson(student)
+    reply = {
+        "type": "buttons",
+        "body": (
+            "Entendi que talvez voce queira parar por agora.\n\n"
+            f"Quer encerrar a aula atual ({format_lesson_title(lesson)}) ou prefere continuar?"
+        ),
+        "buttons": [
+            {"id": "lesson_control:finish", "title": "Encerrar aula"},
+            {"id": "lesson_control:continue", "title": "Continuar agora"},
+            {"id": "lesson_control:practice", "title": "Mini pratica"},
+        ],
+    }
+    db.add(
+        ConversationDB(
+            student_id=student.id,
+            question=message,
+            answer=reply["body"],
+        )
+    )
+    db.commit()
+    return reply
+
+
 def parse_choice_button_message(message: str):
     match = re.fullmatch(
-        r"__button__:(return|post_lesson|lesson):(continue|review|practice|personal|topic|next_preview|hint)::(.+)",
+        r"__button__:(return|post_lesson|lesson|lesson_control):(continue|review|practice|personal|topic|next_preview|hint|finish)::(.+)",
         message or "",
         flags=re.DOTALL,
     )
@@ -1378,6 +1403,23 @@ def build_after_lesson_bot_reply(student: StudentDB, message: str, db: Session):
 
 def handle_choice_button(student: StudentDB, button_choice: dict, db: Session):
     choice = button_choice["choice"]
+    context = button_choice["context"]
+
+    if context == "lesson_control":
+        if choice == "finish":
+            return handle_control_command(student, "encerrar aula", db)
+        if choice == "practice":
+            return build_short_time_micro_lesson(student, "Tenho pouco tempo agora", db)
+        if choice == "continue":
+            if student.current_stage == 7:
+                resumed_answer = resume_stuck_guided_lesson(
+                    student,
+                    "continuar aula guiada",
+                    db,
+                )
+                if resumed_answer is not None:
+                    return resumed_answer
+            return recover_student_flow(student, db)
 
     if choice == "hint":
         return build_lesson_hint_reply(student, button_choice["title"], db)
@@ -2173,6 +2215,13 @@ def process_whatsapp_message(phone: str, message: str, db: Session):
     if student.current_stage != 0:
         student.last_activity = datetime.utcnow()
         db.commit()
+
+        if (
+            student.current_stage == 7
+            and not is_lesson_completed(student)
+            and is_possible_lesson_finish_request(message)
+        ):
+            return build_lesson_finish_confirmation(student, message, db)
 
         if (
             is_short_time_request(message)
@@ -3190,7 +3239,7 @@ def dashboard_operations(
     }
 
 
-_DEPENDENCY_NAMES = ('AssessmentRequest', 'CORRECTION_RUBRIC', 'CURRICULUM', 'CURRICULUM_BY_NUMBER', 'ChatRequest', 'Conversation', 'ConversationDB', 'DAILY_WORD_TIME', 'DASHBOARD_DIR', 'FileResponse', 'HTTPException', 'LESSON_COMPLETED_STAGE', 'LESSON_STAGES', 'LearningRecord', 'LearningRecordDB', 'LessonSessionDB', 'Login', 'OperationalMetricDB', 'OutboundDeliveryDB', 'PLACEMENT_RUBRIC', 'PRODUCT_PLANS', 'PRONUNCIATION_RUBRIC', 'ProcessedWebhookMessageDB', 'Progress', 'ProgressDB', 'PronunciationAttemptDB', 'QuizAnswer', 'SALES_DIR', 'SPACED_REVIEW_INTERVALS', 'Session', 'StateTransitionDB', 'Student', 'StudentDB', 'WEEKLY_QUIZ_DAY', 'WEEKLY_QUIZ_TIME', 'WEEKLY_REPORT_DAY', 'WEEKLY_REPORT_TIME', 'add_onboarding_note', 'bcrypt', 'build_deterministic_guided_reply', 'build_intro_video_reply', 'build_lesson_opening_replies', 'build_next_lesson_preview', 'build_past_simple_finish_quiz', 'build_past_simple_work_quiz', 'build_post_lesson_feedback_message', 'build_quiz_correct_reply', 'build_quiz_retry', 'build_weekly_progress_report', 'calculate_learning_xp', 'call_with_retry', 'create_access_token', 'datetime', 'detect_control_command', 'detect_language_switch_request', 'detect_requested_level_change', 'estimate_level_from_study_history', 'evaluate_placement_test_details', 'evaluate_placement_test_details_fallback', 'extract_english_phrases_for_audio', 'extract_name_candidate', 'format_lesson_schedule', 'format_lesson_title', 'format_placement_feedback', 'func', 'generate_ai_answer', 'generate_writing_practice_feedback', 'get_advancement_criterion', 'get_current_lesson', 'get_latest_lesson_session', 'get_lesson_design', 'get_lesson_stage', 'get_openai_client', 'get_openai_text', 'get_placement_questions', 'get_quiz_interface_language', 'get_start_lesson_for_level', 'get_student_lesson_schedule', 'has_recent_past_simple_context', 'has_started_lesson_today', 'is_affirmative', 'is_basic_level', 'is_exercise_request', 'is_lesson_completed', 'is_lesson_schedule_question', 'is_lesson_start_request', 'is_level_retest_request', 'is_mixed_language_message', 'is_negative', 'is_next_lesson_question', 'is_number_without_time_unit', 'is_off_topic_during_assessment', 'is_probable_learning_goal', 'is_probable_person_name', 'is_ready_for_lesson', 'is_schedule_change_request', 'is_unclear_study_experience', 'is_unclear_yes_no', 'is_valid_placement_answer', 'json', 'looks_like_name_correction', 'normalize_intent_text', 'normalize_language_preference', 'normalize_whatsapp_phone_for_send', 'os', 'parse_lesson_schedule', 'parse_practice_button_message', 'parse_quiz_button_message', 'repeat_placement_question', 'require_student_access', 'reset_lesson_flow', 'resume_stuck_guided_lesson', 'save_lesson_feedback_if_expected', 'start_guided_lesson', 'text', 'timedelta', 'update_lesson_engagement', 'wants_portuguese_mode', 'whatsapp_phone_variants')
+_DEPENDENCY_NAMES = ('AssessmentRequest', 'CORRECTION_RUBRIC', 'CURRICULUM', 'CURRICULUM_BY_NUMBER', 'ChatRequest', 'Conversation', 'ConversationDB', 'DAILY_WORD_TIME', 'DASHBOARD_DIR', 'FileResponse', 'HTTPException', 'LESSON_COMPLETED_STAGE', 'LESSON_STAGES', 'LearningRecord', 'LearningRecordDB', 'LessonSessionDB', 'Login', 'OperationalMetricDB', 'OutboundDeliveryDB', 'PLACEMENT_RUBRIC', 'PRODUCT_PLANS', 'PRONUNCIATION_RUBRIC', 'ProcessedWebhookMessageDB', 'Progress', 'ProgressDB', 'PronunciationAttemptDB', 'QuizAnswer', 'SALES_DIR', 'SPACED_REVIEW_INTERVALS', 'Session', 'StateTransitionDB', 'Student', 'StudentDB', 'WEEKLY_QUIZ_DAY', 'WEEKLY_QUIZ_TIME', 'WEEKLY_REPORT_DAY', 'WEEKLY_REPORT_TIME', 'add_onboarding_note', 'bcrypt', 'build_deterministic_guided_reply', 'build_intro_video_reply', 'build_lesson_opening_replies', 'build_next_lesson_preview', 'build_past_simple_finish_quiz', 'build_past_simple_work_quiz', 'build_post_lesson_feedback_message', 'build_quiz_correct_reply', 'build_quiz_retry', 'build_weekly_progress_report', 'calculate_learning_xp', 'call_with_retry', 'create_access_token', 'datetime', 'detect_control_command', 'detect_language_switch_request', 'detect_requested_level_change', 'estimate_level_from_study_history', 'evaluate_placement_test_details', 'evaluate_placement_test_details_fallback', 'extract_english_phrases_for_audio', 'extract_name_candidate', 'format_lesson_schedule', 'format_lesson_title', 'format_placement_feedback', 'func', 'generate_ai_answer', 'generate_writing_practice_feedback', 'get_advancement_criterion', 'get_current_lesson', 'get_latest_lesson_session', 'get_lesson_design', 'get_lesson_stage', 'get_openai_client', 'get_openai_text', 'get_placement_questions', 'get_quiz_interface_language', 'get_start_lesson_for_level', 'get_student_lesson_schedule', 'has_recent_past_simple_context', 'has_started_lesson_today', 'is_affirmative', 'is_basic_level', 'is_exercise_request', 'is_lesson_completed', 'is_lesson_schedule_question', 'is_lesson_start_request', 'is_level_retest_request', 'is_mixed_language_message', 'is_negative', 'is_next_lesson_question', 'is_number_without_time_unit', 'is_off_topic_during_assessment', 'is_possible_lesson_finish_request', 'is_probable_learning_goal', 'is_probable_person_name', 'is_ready_for_lesson', 'is_schedule_change_request', 'is_unclear_study_experience', 'is_unclear_yes_no', 'is_valid_placement_answer', 'json', 'looks_like_name_correction', 'normalize_intent_text', 'normalize_language_preference', 'normalize_whatsapp_phone_for_send', 'os', 'parse_lesson_schedule', 'parse_practice_button_message', 'parse_quiz_button_message', 'repeat_placement_question', 'require_student_access', 'reset_lesson_flow', 'resume_stuck_guided_lesson', 'save_lesson_feedback_if_expected', 'start_guided_lesson', 'text', 'timedelta', 'update_lesson_engagement', 'wants_portuguese_mode', 'whatsapp_phone_variants')
 _EXPORTED_NAMES = ('assessment', 'build_dashboard_student', 'build_progress_message', 'build_review_message', 'build_smart_return_prompt', 'build_status_message', 'chat', 'create_learning_record', 'dashboard_operations', 'dashboard_page', 'dashboard_student', 'dashboard_teacher', 'get_completed_lessons_count', 'get_conversations', 'get_learning_mode_label', 'get_or_create_whatsapp_student', 'get_pedagogy_lesson', 'get_pedagogy_lessons', 'get_pedagogy_overview', 'get_product_plans', 'get_progress', 'get_recent_learning_records', 'get_student', 'get_student_conversations', 'get_student_learning_records', 'get_student_lesson_schedule_endpoint', 'get_student_progress', 'get_students', 'get_students_dashboard', 'handle_control_command', 'login', 'me', 'operational_health', 'operational_metrics', 'process_whatsapp_message', 'quiz', 'ranking', 'recent_state_transitions', 'recover_student_flow', 'register', 'reset_student_for_beta', 'sales_page', 'save_conversation', 'save_progress', 'update_student_lesson_schedule')
 _DYNAMIC_CALLABLES = {
     "call_with_retry",

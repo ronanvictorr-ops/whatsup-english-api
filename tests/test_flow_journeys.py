@@ -730,7 +730,7 @@ class FlowJourneyTests(unittest.TestCase):
         self.db.commit()
 
         with patch.object(main, "generate_ai_answer", return_value="Microaula curta.") as answer:
-            reply = self.send(student, "hoje nao posso muito, so 2 min")
+            reply = self.send(student, "rapidinho, so 2 min")
 
         self.assertEqual(reply, "Microaula curta.")
         ai_question = answer.call_args.kwargs["ai_question"]
@@ -946,6 +946,63 @@ class FlowJourneyTests(unittest.TestCase):
         self.assertIn("Encerramos a aula", reply)
         self.assertNotIn("Em ingles:", reply)
         self.assertNotIn("Repeat after me", reply)
+        self.assertEqual(student.lesson_stage, "completed")
+
+    def test_possible_finish_phrase_asks_for_confirmation_buttons(self):
+        student = self.create_student(
+            stage=7,
+            assessment_completed="Yes",
+            schedule_completed="Yes",
+            current_lesson=1,
+            lesson_stage="structure",
+            messages_in_current_lesson=3,
+        )
+        self.db.add(
+            LessonSessionDB(
+                student_id=student.id,
+                lesson_number=1,
+                lesson_title="Greetings",
+                status="started",
+            )
+        )
+        self.db.commit()
+
+        with patch.object(main, "generate_ai_answer") as answer:
+            reply = self.send(student, "Estou sem tempo, deixa pra depois")
+
+        answer.assert_not_called()
+        self.assertEqual(reply["type"], "buttons")
+        self.assertIn("talvez voce queira parar", reply["body"])
+        self.assertEqual(
+            [button["id"] for button in reply["buttons"]],
+            ["lesson_control:finish", "lesson_control:continue", "lesson_control:practice"],
+        )
+        self.assertEqual(student.lesson_stage, "structure")
+
+    def test_confirm_finish_button_completes_lesson(self):
+        student = self.create_student(
+            stage=7,
+            assessment_completed="Yes",
+            schedule_completed="Yes",
+            current_lesson=1,
+            lesson_stage="structure",
+            messages_in_current_lesson=3,
+        )
+        self.db.add(
+            LessonSessionDB(
+                student_id=student.id,
+                lesson_number=1,
+                lesson_title="Greetings",
+                status="started",
+            )
+        )
+        self.db.commit()
+
+        with patch.object(main, "generate_ai_answer") as answer:
+            reply = self.send(student, "__button__:lesson_control:finish::Encerrar aula")
+
+        answer.assert_not_called()
+        self.assertIn("Encerramos a aula", reply)
         self.assertEqual(student.lesson_stage, "completed")
 
     def test_hint_button_gives_short_guided_hint(self):

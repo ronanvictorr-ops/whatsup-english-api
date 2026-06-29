@@ -124,9 +124,6 @@ def run_academic_automations_once(db: Session, now: datetime) -> None:
     send_weekly_quizzes(db, now)
     send_weekly_progress_reports(db, now)
 
-
-
-
 # =========================
 # CONFIGURAÇÕES INICIAIS
 # =========================
@@ -650,6 +647,11 @@ def detect_control_command(message: str):
             return command
 
     return None
+
+
+def is_possible_lesson_finish_request(message: str):
+    patterns = [r"\b(?:deixa|deixe|fica|ficar)\s+(?:pra|para)\s+depois\b", r"\b(?:mais tarde|depois|amanha)\b", r"\b(?:agora nao|hoje nao|nao posso|nao consigo)\b", r"\b(?:estou|to|tô|estou meio|to meio).*(?:sem tempo|ocupado|ocupada|cansado|cansada)\b", r"\b(?:tenho|preciso).*(?:sair|resolver|trabalhar|ir embora)\b", r"\b(?:continuamos|continua|seguir|seguimos).*(?:depois|mais tarde|amanha)\b", r"\b(?:parar|paramos|pausar).*(?:por aqui|agora|hoje)\b"]
+    return any(re.search(pattern, normalize_intent_text(message)) for pattern in patterns)
 
 
 def get_current_lesson(student: StudentDB):
@@ -2074,10 +2076,6 @@ def format_placement_feedback(details: dict, language: str):
     return "\n".join(lines)
 
 
-
-# =========================
-# DATABASE
-# =========================
 
 # =========================
 # OPENAI
@@ -3964,6 +3962,7 @@ api_dependencies = {
         "is_next_lesson_question": is_next_lesson_question,
         "is_number_without_time_unit": is_number_without_time_unit,
         "is_off_topic_during_assessment": is_off_topic_during_assessment,
+        "is_possible_lesson_finish_request": is_possible_lesson_finish_request,
         "is_probable_learning_goal": is_probable_learning_goal,
         "is_probable_person_name": is_probable_person_name,
         "is_ready_for_lesson": is_ready_for_lesson,
