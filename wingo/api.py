@@ -1521,19 +1521,7 @@ def build_topic_practice_reply(student: StudentDB, topic: str, message: str, db:
 
 
 def build_safe_conversation_practice(student: StudentDB, button_title: str, db: Session):
-    try:
-        return generate_ai_answer(
-            student=student,
-            question=button_title,
-            db=db,
-            ai_question=(
-                "[Internal instruction: the student tapped a post-lesson button to practice "
-                "conversation. Start a tiny conversation practice connected to the student's "
-                "level, interests, and recent lesson. Ask exactly one short question. For Basic "
-                "students, explain in Portuguese and keep the English sentence simple.]"
-            ),
-        )
-    except Exception:
+    def local_practice_reply():
         lesson = get_current_lesson(student)
         if is_basic_level(getattr(student, "level", None)):
             return (
@@ -1548,6 +1536,32 @@ def build_safe_conversation_practice(student: StudentDB, button_title: str, db: 
             "Answer with one sentence:\n\n"
             "What is one thing you did recently?"
         )
+
+    try:
+        answer = generate_ai_answer(
+            student=student,
+            question=button_title,
+            db=db,
+            ai_question=(
+                "[Internal instruction: the student tapped a post-lesson button to practice "
+                "conversation. Start a tiny conversation practice connected to the student's "
+                "level, interests, and recent lesson. Ask exactly one short question. For Basic "
+                "students, explain in Portuguese and keep the English sentence simple.]"
+            ),
+        )
+        if is_ai_unavailable_reply(answer):
+            return local_practice_reply()
+        return answer
+    except Exception:
+        return local_practice_reply()
+
+
+def is_ai_unavailable_reply(answer: str):
+    text = normalize_intent_text(answer)
+    return (
+        "correcao inteligente ficou instavel" in text
+        or "temporary issue with the smart correction" in text
+    )
 
 
 def is_audio_replay_request(message: str):
