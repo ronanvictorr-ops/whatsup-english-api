@@ -2,7 +2,7 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
 
 import main
@@ -519,6 +519,25 @@ class FlowJourneyTests(unittest.TestCase):
 
         self.assertIn("Bahia", prompt["body"])
         self.assertEqual(prompt["buttons"][0]["id"], "return:personal")
+
+    def test_smart_return_prompt_ignores_missing_personal_notes_table(self):
+        student = self.create_student(
+            stage=7,
+            assessment_completed="Yes",
+            schedule_completed="Yes",
+            lesson_stage="completed",
+        )
+        self.db.execute(text("DROP TABLE personal_notes"))
+        self.db.commit()
+
+        prompt = main.build_smart_return_prompt(student, self.db)
+
+        self.assertEqual(prompt["type"], "buttons")
+        self.assertIn("Que bom que voce voltou", prompt["body"])
+        self.assertEqual(
+            [button["id"] for button in prompt["buttons"]],
+            ["return:practice", "return:continue", "return:topic"],
+        )
 
     def test_post_lesson_practice_button_starts_tiny_conversation(self):
         student = self.create_student(

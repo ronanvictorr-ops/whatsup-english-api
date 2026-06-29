@@ -4,6 +4,7 @@ import unicodedata
 from difflib import SequenceMatcher
 
 from sqlalchemy.orm import Session
+from sqlalchemy.exc import SQLAlchemyError
 
 from models import PersonalNoteDB, StudentDB
 
@@ -69,13 +70,18 @@ def should_extract_personal_note(message: str):
 
 
 def get_recent_personal_notes_summary(student_id: int, db: Session, limit: int = 6):
-    notes = (
-        db.query(PersonalNoteDB)
-        .filter(PersonalNoteDB.student_id == student_id)
-        .order_by(PersonalNoteDB.id.desc())
-        .limit(limit)
-        .all()
-    )
+    try:
+        notes = (
+            db.query(PersonalNoteDB)
+            .filter(PersonalNoteDB.student_id == student_id)
+            .order_by(PersonalNoteDB.id.desc())
+            .limit(limit)
+            .all()
+        )
+    except SQLAlchemyError as error:
+        db.rollback()
+        print("Memoria pessoal indisponivel:", type(error).__name__)
+        return "No personal relationship memory saved yet."
 
     if not notes:
         return "No personal relationship memory saved yet."

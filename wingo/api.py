@@ -6,6 +6,7 @@ import re
 
 from fastapi import APIRouter, Depends, Query, Request
 from sqlalchemy import inspect as inspect_database
+from sqlalchemy.exc import SQLAlchemyError
 
 from database import get_db
 from wingo.rate_limit import client_identifier, enforce_rate_limit
@@ -909,17 +910,23 @@ def build_review_message(student: StudentDB, db: Session):
     return "\n".join(lines)
 
 
-def get_latest_personal_note(student: StudentDB):
-    notes = list(getattr(student, "personal_notes", []) or [])
-    if not notes:
+def get_latest_personal_note(student: StudentDB, db: Session | None = None):
+    try:
+        notes = list(getattr(student, "personal_notes", []) or [])
+        if not notes:
+            return None
+        return sorted(notes, key=lambda note: note.id or 0, reverse=True)[0]
+    except SQLAlchemyError as error:
+        if db is not None:
+            db.rollback()
+        print("Memoria pessoal indisponivel:", type(error).__name__)
         return None
-    return sorted(notes, key=lambda note: note.id or 0, reverse=True)[0]
 
 
 def build_smart_return_prompt(student: StudentDB, db: Session):
     lesson = get_current_lesson(student)
     recent_records = get_recent_learning_records(student.id, db, limit=1)
-    latest_note = get_latest_personal_note(student)
+    latest_note = get_latest_personal_note(student, db)
 
     if student.current_stage == 7 and not is_lesson_completed(student):
         return {
