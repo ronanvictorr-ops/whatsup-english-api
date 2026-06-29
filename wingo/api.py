@@ -1492,10 +1492,55 @@ def normalize_practice_topic_choice(message: str):
     return aliases.get(text, message.strip())
 
 
+def build_local_topic_practice_reply(student: StudentDB, topic: str):
+    topic_name = (topic or "English").strip()
+    normalized_topic = normalize_intent_text(topic_name)
+
+    if "travel" in normalized_topic:
+        example = "I need help at the airport."
+        question = "Where do you want to travel?"
+    elif "work" in normalized_topic:
+        example = "I have a meeting today."
+        question = "What do you do at work?"
+    elif "interview" in normalized_topic:
+        example = "I am good at learning fast."
+        question = "What is one strength you have?"
+    elif "future" in normalized_topic:
+        example = "I will study English today."
+        question = "What will you do tomorrow?"
+    elif "past simple" in normalized_topic or "passado" in normalized_topic:
+        example = "I worked yesterday."
+        question = "What did you do yesterday?"
+    elif "present continuous" in normalized_topic or "presente continuo" in normalized_topic:
+        example = "I am studying English now."
+        question = "What are you doing now?"
+    else:
+        example = "I like this topic."
+        question = f"What can you say about {topic_name}?"
+
+    if is_basic_level(getattr(student, "level", None)):
+        return (
+            f"Combinado, vamos praticar {topic_name}.\n\n"
+            "Frase util:\n\n"
+            f"{example}\n\n"
+            "Agora responda em ingles com uma frase curta:\n\n"
+            f"{question}"
+        )
+
+    return (
+        f"Let's practice {topic_name}.\n\n"
+        "Useful sentence:\n\n"
+        f"{example}\n\n"
+        "Answer with one short sentence:\n\n"
+        f"{question}"
+    )
+
+
 def build_topic_practice_reply(student: StudentDB, topic: str, message: str, db: Session):
+    student.current_stage = 7
+    db.commit()
+
     if normalize_intent_text(topic) == "pronunciation":
-        student.current_stage = 7
-        db.commit()
         return (
             "Perfeito, vamos treinar pronuncia.\n\n"
             "Comece com uma frase curta:\n\n"
@@ -1503,21 +1548,27 @@ def build_topic_practice_reply(student: StudentDB, topic: str, message: str, db:
             "Missao rapida: me mande essa frase em audio. Eu vou avaliar clareza, ritmo e pronuncia."
         )
 
-    return generate_ai_answer(
-        student=student,
-        question=message,
-        db=db,
-        ai_question=(
-            "[Internal instruction: the student explicitly chose a new practice topic. "
-            f"Switch immediately to this topic: {topic}. "
-            "Do not continue Past Simple or the previous quiz unless that is the chosen topic. "
-            "Acknowledge the topic, give one fresh level-appropriate example that does not "
-            "repeat recent conversation examples, then ask exactly one short exercise about it. "
-            "Use Portuguese guidance for Basic and Basic 2 students.]\n\n"
-            f"Recent examples to avoid:\n{get_recent_example_context(student, db)}\n\n"
-            f"Student message: {message}"
-        ),
-    )
+    try:
+        answer = generate_ai_answer(
+            student=student,
+            question=message,
+            db=db,
+            ai_question=(
+                "[Internal instruction: the student explicitly chose a new practice topic. "
+                f"Switch immediately to this topic: {topic}. "
+                "Do not continue Past Simple or the previous quiz unless that is the chosen topic. "
+                "Acknowledge the topic, give one fresh level-appropriate example that does not "
+                "repeat recent conversation examples, then ask exactly one short exercise about it. "
+                "Use Portuguese guidance for Basic and Basic 2 students.]\n\n"
+                f"Recent examples to avoid:\n{get_recent_example_context(student, db)}\n\n"
+                f"Student message: {message}"
+            ),
+        )
+        if is_ai_unavailable_reply(answer):
+            return build_local_topic_practice_reply(student, topic)
+        return answer
+    except Exception:
+        return build_local_topic_practice_reply(student, topic)
 
 
 def build_safe_conversation_practice(student: StudentDB, button_title: str, db: Session):
@@ -1921,6 +1972,8 @@ def process_whatsapp_message(phone: str, message: str, db: Session):
 
     if practice_choice:
         if practice_choice["choice"] == "choose_topic":
+            mark_awaiting_practice_topic(student)
+            db.commit()
             if practice_choice["language"] == "en":
                 return "Which topic would you like to practice? For example: future, travel, work, or pronunciation."
             return "Qual tema voce quer praticar? Por exemplo: futuro, viagem, trabalho ou pronuncia."
