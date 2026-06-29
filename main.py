@@ -124,9 +124,6 @@ def run_academic_automations_once(db: Session, now: datetime) -> None:
     send_weekly_quizzes(db, now)
     send_weekly_progress_reports(db, now)
 
-
-
-
 # =========================
 # CONFIGURAÇÕES INICIAIS
 # =========================
@@ -639,7 +636,7 @@ def detect_control_command(message: str):
         ("weekly_report", [r"\brelatorio semanal\b", r"\brelatorio da semana\b", r"\bresumo da semana\b"]),
         ("review", [r"\brevisar aula\b", r"\brevisao\b", r"\brevisão\b", r"\brevisar\b"]),
         ("pause", [r"\bpausar aulas\b", r"\bpausar\b", r"\bdar um tempo\b"]),
-        ("finish_lesson", [r"\bencerrar aula\b", r"\bfinalizar aula\b", r"\bterminar aula\b", r"\bparar aula\b", r"\bchega de aula\b"]),
+        ("finish_lesson", [r"\b(?:encerrar|finalizar|terminar|parar) aula\b", r"\bchega de aula\b", r"\b(?:finalizei|finalize|finaliza|finalizar|finalizando).*\baula\b", r"\baula.*\b(?:finalizada|finalizei|finalize|finaliza|finalizar)\b", r"\b(?:finish|end|stop).*(?:lesson|class)\b", r"\b(?:lesson|class).*(?:finish|finished|end|stop)\b"]),
         ("resume", [r"\bretomar aulas\b", r"\bvoltar aulas\b", r"\bcontinuar aulas\b", r"\bvamos continuar\b"]),
         ("support", [r"\bsuporte\b", r"\bfalar com suporte\b", r"\bhumano\b", r"\bprofessor humano\b"]),
         ("help", [r"\bajuda\b", r"\bcomandos\b", r"\bo que posso fazer\b"]),
@@ -650,6 +647,11 @@ def detect_control_command(message: str):
             return command
 
     return None
+
+
+def is_possible_lesson_finish_request(message: str):
+    patterns = [r"\b(?:deixa|deixe|fica|ficar)\s+(?:pra|para)\s+depois\b", r"\b(?:mais tarde|depois|amanha)\b", r"\b(?:agora nao|hoje nao|nao posso|nao consigo)\b", r"\b(?:estou|to|tô|estou meio|to meio).*(?:sem tempo|ocupado|ocupada|cansado|cansada)\b", r"\b(?:tenho|preciso).*(?:sair|resolver|trabalhar|ir embora)\b", r"\b(?:continuamos|continua|seguir|seguimos).*(?:depois|mais tarde|amanha)\b", r"\b(?:parar|paramos|pausar).*(?:por aqui|agora|hoje)\b"]
+    return any(re.search(pattern, normalize_intent_text(message)) for pattern in patterns)
 
 
 def get_current_lesson(student: StudentDB):
@@ -2074,10 +2076,6 @@ def format_placement_feedback(details: dict, language: str):
     return "\n".join(lines)
 
 
-
-# =========================
-# DATABASE
-# =========================
 
 # =========================
 # OPENAI
@@ -3964,6 +3962,7 @@ api_dependencies = {
         "is_next_lesson_question": is_next_lesson_question,
         "is_number_without_time_unit": is_number_without_time_unit,
         "is_off_topic_during_assessment": is_off_topic_during_assessment,
+        "is_possible_lesson_finish_request": is_possible_lesson_finish_request,
         "is_probable_learning_goal": is_probable_learning_goal,
         "is_probable_person_name": is_probable_person_name,
         "is_ready_for_lesson": is_ready_for_lesson,

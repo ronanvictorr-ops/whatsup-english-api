@@ -87,7 +87,9 @@ def should_prepend_return_prompt(message: str) -> bool:
     if (message or "").startswith("__button__:"):
         return False
     try:
-        return _resolve("detect_control_command")(message) is None
+        if _resolve("detect_control_command")(message) is not None:
+            return False
+        return not _resolve("is_possible_lesson_finish_request")(message)
     except Exception:
         return True
 
